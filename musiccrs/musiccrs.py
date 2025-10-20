@@ -1,5 +1,6 @@
 """MusicCRS conversational agent."""
 
+import os
 import ollama
 from dialoguekit.core.annotated_utterance import AnnotatedUtterance
 from dialoguekit.core.dialogue_act import DialogueAct
@@ -10,9 +11,13 @@ from dialoguekit.participant.agent import Agent
 from dialoguekit.participant.participant import DialogueParticipant
 from dialoguekit.platforms import FlaskSocketPlatform
 
-OLLAMA_HOST = "https://ollama.ux.uis.no"
-OLLAMA_MODEL = "llama3.3:70b"
-OLLAMA_API_KEY = "SET YOUR API KEY HERE"
+# Load environment variables from config.env
+from dotenv import load_dotenv
+load_dotenv('config.env')
+
+OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'https://ollama.ux.uis.no')
+OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.3:70b')
+OLLAMA_API_KEY = os.getenv('OLLAMA_API_KEY')
 
 _INTENT_OPTIONS = Intent("OPTIONS")
 
@@ -23,6 +28,8 @@ class MusicCRS(Agent):
         super().__init__(id="MusicCRS")
 
         if use_llm:
+            if not OLLAMA_API_KEY:
+                raise ValueError("OLLAMA_API_KEY not found in environment variables. Please check config.env file.")
             self._llm = ollama.Client(
                 host=OLLAMA_HOST,
                 headers={"Authorization": f"Bearer {OLLAMA_API_KEY}"},

@@ -142,3 +142,6 @@ Thumbs.db
 *.sqlite
 *.sqlite-journal
 *.db
+
+# Environment files
+config.env
