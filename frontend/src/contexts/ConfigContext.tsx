@@ -15,7 +15,7 @@ type ConfigProviderProps = {
 
 const defaultConfig: Config = {
   name: "Chatbot",
-  serverUrl: "http://127.0.0.1:5000/",
+  serverUrl: process.env.REACT_APP_SERVER_URL || "http://127.0.0.1:5000/",
   useFeedback: false,
   useLogin: false,
   useWidget: false,

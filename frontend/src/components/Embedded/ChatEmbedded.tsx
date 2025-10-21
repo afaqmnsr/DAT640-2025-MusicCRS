@@ -1,10 +1,12 @@
-import "./ChatEmbedded.css";
 import { ReactNode } from "react";
+import { Box } from '@mui/material';
 
 export default function ChatEmbedded({ children }: { children: ReactNode }) {
   return (
-    <div className="row">
-      <div className="col-md-6 col-sm-12">{children}</div>
-    </div>
+    <Box sx={{ height: '100%', display: 'flex' }}>
+      <Box sx={{ flex: 1 }}>
+        {children}
+      </Box>
+    </Box>
   );
 }

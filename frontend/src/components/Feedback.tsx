@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
-import { MDBIcon } from "mdb-react-ui-kit";
+import { IconButton, Box } from '@mui/material';
+import { ThumbUp, ThumbDown } from '@mui/icons-material';
 
 export default function Feedback({
   message,
@@ -9,8 +10,8 @@ export default function Feedback({
   on_feedback: (message: string, event: string) => void;
 }): JSX.Element {
   const [liked, setLiked] = useState<boolean | null>(null);
-  const thumbsUp = useRef<HTMLAnchorElement>(null);
-  const thumbsDown = useRef<HTMLAnchorElement>(null);
+  const thumbsUp = useRef<HTMLButtonElement>(null);
+  const thumbsDown = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!!thumbsUp.current) {
@@ -31,16 +32,35 @@ export default function Feedback({
   }, [thumbsDown, on_feedback, message]);
 
   return (
-    <div className="d-flex flex-row justify-content-end">
-      <a className="text-muted px-1" href="#!" ref={thumbsUp}>
-        <MDBIcon className={`${liked ? "fas" : "far"}`} icon="thumbs-up" />
-      </a>
-      <a className="text-muted pe-1" href="#!" ref={thumbsDown}>
-        <MDBIcon
-          className={`${liked !== null && !liked ? "fas" : "far"}`}
-          icon="thumbs-down"
-        />
-      </a>
-    </div>
+    <Box sx={{ 
+      display: 'flex', 
+      justifyContent: 'flex-end',
+      gap: 0.5
+    }}>
+      <IconButton 
+        ref={thumbsUp}
+        size="small"
+        sx={{ 
+          color: liked === true ? '#1db954' : 'text.secondary',
+          '&:hover': {
+            backgroundColor: 'rgba(29, 185, 84, 0.1)'
+          }
+        }}
+      >
+        <ThumbUp fontSize="small" />
+      </IconButton>
+      <IconButton 
+        ref={thumbsDown}
+        size="small"
+        sx={{ 
+          color: liked === false ? '#ff4444' : 'text.secondary',
+          '&:hover': {
+            backgroundColor: 'rgba(255, 68, 68, 0.1)'
+          }
+        }}
+      >
+        <ThumbDown fontSize="small" />
+      </IconButton>
+    </Box>
   );
 }

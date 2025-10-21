@@ -1,4 +1,4 @@
-import { MDBBtn } from "mdb-react-ui-kit";
+import { Button } from '@mui/material';
 
 export default function QuickReplyButton({
   text,
@@ -14,8 +14,14 @@ export default function QuickReplyButton({
   };
 
   return (
-    <MDBBtn outline className="btn-sm" color="secondary" onClick={handleClick}>
+    <Button 
+      variant="outlined" 
+      size="small" 
+      color="secondary" 
+      onClick={handleClick}
+      sx={{ textTransform: 'none' }}
+    >
       {text}
-    </MDBBtn>
+    </Button>
   );
 }

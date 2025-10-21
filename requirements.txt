@@ -1,3 +1,5 @@
 dialoguekit
 ollama
 python-dotenv
+Pillow
+requests

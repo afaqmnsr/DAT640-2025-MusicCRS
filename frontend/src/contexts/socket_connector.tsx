@@ -3,7 +3,7 @@ import io, { Socket } from "socket.io-client";
 import { AgentMessage, UserMessage, ChatMessage } from "../types";
 
 export default function useSocketConnection(
-  url: string = "http://127.0.0.1:5000",
+  url: string = process.env.REACT_APP_SERVER_URL || "http://127.0.0.1:5000",
   path: string | undefined
 ) {
   const [socket, setSocket] = useState<Socket | null>(null);

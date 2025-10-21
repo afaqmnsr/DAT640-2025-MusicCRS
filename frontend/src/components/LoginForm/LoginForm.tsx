@@ -1,15 +1,15 @@
 import { useContext, useEffect, useState } from "react";
 import { useSocket } from "../../contexts/SocketContext";
 import {
-  MDBInput,
-  MDBBtn,
-  MDBCard,
-  MDBCardBody,
-  MDBCardTitle,
-  MDBCardHeader,
-  MDBCardText,
-} from "mdb-react-ui-kit";
-import "./LoginForm.css";
+  Card,
+  CardHeader,
+  CardContent,
+  TextField,
+  Button,
+  Typography,
+  Box,
+  Alert,
+} from '@mui/material';
 import { UserContext } from "../../contexts/UserContext";
 import { ConfigContext } from "../../contexts/ConfigContext";
 
@@ -44,45 +44,94 @@ const LoginForm = () => {
   }, [onAuthentication, setUser, setErrorMessage, username]);
 
   return (
-    <div className="chat-widget-content">
-      <MDBCard
-        id="loginForm"
-        className="chat-widget-card"
-        style={{ borderRadius: "15px" }}
+    <Box sx={{ 
+      display: 'flex', 
+      justifyContent: 'center', 
+      alignItems: 'center', 
+      minHeight: '100%',
+      p: 2 
+    }}>
+      <Card
+        sx={{ 
+          borderRadius: 3,
+          maxWidth: 400,
+          width: '100%',
+          boxShadow: 3
+        }}
       >
-        <MDBCardHeader
-          className="d-flex justify-content-between align-items-center p-3 bg-info text-white border-bottom-0"
-          style={{
-            borderTopLeftRadius: "15px",
-            borderTopRightRadius: "15px",
+        <CardHeader
+          title={config.name}
+          sx={{
+            backgroundColor: '#1db954',
+            color: 'white',
+            '& .MuiCardHeader-title': {
+              fontWeight: 'bold',
+              fontSize: '1.2rem'
+            }
           }}
-        >
-          <p className="mb-0 fw-bold">{config.name}</p>
-        </MDBCardHeader>
+        />
 
-        <MDBCardBody className="login">
-          <MDBCardTitle>Login</MDBCardTitle>
-          <MDBInput
-            className="mb-3"
+        <CardContent sx={{ p: 3 }}>
+          <Typography variant="h5" component="h2" sx={{ mb: 3, fontWeight: 'bold' }}>
+            Login
+          </Typography>
+          
+          <TextField
+            fullWidth
             label="Username"
+            value={username}
             onChange={(e) => setUsername(e.target.value)}
+            sx={{ mb: 2 }}
+            variant="outlined"
           />
-          <MDBInput
+          
+          <TextField
+            fullWidth
             type="password"
             label="Password"
+            value={password}
             onChange={(e) => setPassword(e.target.value)}
+            sx={{ mb: 2 }}
+            variant="outlined"
           />
+          
           {errorMessage && (
-            <MDBCardText className="text-danger">{errorMessage}</MDBCardText>
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {errorMessage}
+            </Alert>
           )}
-          <div className="d-flex justify-content-between mt-3">
-            <MDBBtn onClick={handleRegister}>Register</MDBBtn>
-            <MDBBtn onClick={handleLogin}>Sign In</MDBBtn>
-            <MDBBtn onClick={handleAnonymousLogin}>Anonymous</MDBBtn>
-          </div>
-        </MDBCardBody>
-      </MDBCard>
-    </div>
+          
+          <Box sx={{ 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            gap: 1,
+            mt: 3 
+          }}>
+            <Button 
+              variant="outlined" 
+              onClick={handleRegister}
+              sx={{ flex: 1 }}
+            >
+              Register
+            </Button>
+            <Button 
+              variant="contained" 
+              onClick={handleLogin}
+              sx={{ flex: 1 }}
+            >
+              Sign In
+            </Button>
+            <Button 
+              variant="text" 
+              onClick={handleAnonymousLogin}
+              sx={{ flex: 1 }}
+            >
+              Anonymous
+            </Button>
+          </Box>
+        </CardContent>
+      </Card>
+    </Box>
   );
 };
 
