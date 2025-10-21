@@ -16,6 +16,8 @@ export type ChatMessage = {
   attachments?: ChatMessageAttachment[];
   text?: string;
   intent?: string;
+  participant?: 'user' | 'agent'; // Add participant field to distinguish user vs agent messages
+  timestamp?: string; // Add timestamp field for message ordering
 };
 
 export type AgentMessage = {

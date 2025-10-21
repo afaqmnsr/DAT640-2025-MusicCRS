@@ -27,6 +27,8 @@ import {
   MoreHoriz as OptionsIcon,
   PlayArrow as PlayIcon,
   QueueMusic as QueueIcon,
+  Edit as EditIcon,
+  Image as ImageIcon,
 } from '@mui/icons-material';
 
 interface HelpMessageProps {
@@ -43,7 +45,8 @@ export default function HelpMessage({ onCommandClick, sampleSongs = [], totalSon
   ];
 
   const playlistCommands = [
-    { command: '/add [artist]: [song]', description: 'Add a song to current playlist', icon: <AddIcon /> },
+    { command: '/add [artist]: [song]', description: 'Add a song to current playlist (full format)', icon: <AddIcon /> },
+    { command: '/add [song]', description: 'Add a song by title only (with disambiguation)', icon: <AddIcon /> },
     { command: '/remove [artist]: [song]', description: 'Remove a song from current playlist', icon: <RemoveIcon /> },
     { command: '/view', description: 'View current playlist', icon: <ViewIcon /> },
     { command: '/clear', description: 'Clear the current playlist', icon: <ClearIcon /> },
@@ -54,9 +57,13 @@ export default function HelpMessage({ onCommandClick, sampleSongs = [], totalSon
     { command: '/switch [playlist_name]', description: 'Switch to an existing playlist', icon: <PlayIcon /> },
     { command: '/list', description: 'List all your playlists', icon: <QueueIcon /> },
     { command: '/delete [playlist_name]', description: 'Delete a playlist', icon: <ClearIcon /> },
+    { command: '/rename [old_name] [new_name]', description: 'Rename a playlist', icon: <EditIcon /> },
+    { command: '/cover [playlist_name]', description: 'Generate a cover image for a playlist', icon: <ImageIcon /> },
   ];
 
   const otherFeatures = [
+    { command: '/search [query]', description: 'Search for songs by artist or title', icon: <MusicIcon /> },
+    { command: '/ask [question]', description: 'Ask questions about songs and artists', icon: <ChatIcon /> },
     { command: '/ask_llm [question]', description: 'Ask the AI a question', icon: <AIIcon /> },
     { command: '/options', description: 'See example options', icon: <OptionsIcon /> },
   ];

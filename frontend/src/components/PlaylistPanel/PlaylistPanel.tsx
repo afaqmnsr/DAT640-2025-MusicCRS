@@ -52,6 +52,7 @@ interface PlaylistSidebarProps {
   currentPlaylist: string;
   allPlaylists: {[key: string]: string[]};
   generatedCoverImage?: string | null;
+  searchResults?: string[];
 }
 
 interface PlaylistInfo {
@@ -66,6 +67,7 @@ export default function PlaylistSidebar({
   currentPlaylist: propCurrentPlaylist,
   allPlaylists,
   generatedCoverImage,
+  searchResults: propSearchResults = [],
 }: PlaylistSidebarProps) {
   const { sendMessage } = useSocket();
   const [searchQuery, setSearchQuery] = useState('');
@@ -113,6 +115,15 @@ export default function PlaylistSidebar({
     setPlaylists(updatedPlaylists);
   }, [playlistList, currentPlaylist, allPlaylists]);
 
+  // Update search results when prop changes
+  useEffect(() => {
+    if (propSearchResults.length > 0) {
+      setSearchResults(propSearchResults);
+      setShowSearchResults(true);
+      console.log('Updated search results from prop:', propSearchResults.length, 'songs'); // Debug log
+    }
+  }, [propSearchResults]);
+
   // Enhanced search functionality - uses backend search for unlimited songs
   const searchSongs = useCallback((query: string) => {
     if (!query.trim()) {
@@ -121,32 +132,32 @@ export default function PlaylistSidebar({
       return;
     }
 
-    // Don't set loading state for search - it's not a playlist operation
-    // setIsLoading(true); // Removed - search shouldn't show playlist loading
-    
     // Use backend search command for comprehensive results from entire database
     sendMessage({ message: `/search ${query}` });
     
-    // Also do local search as immediate fallback (limited to prevent UI lag)
-    const searchTerm = query.toLowerCase();
-    const localResults = availableSongs
-      .filter(song => {
-        const songLower = song.toLowerCase();
-        const [artist, title] = songLower.split(':');
-        return songLower.includes(searchTerm) || 
-               artist?.trim().includes(searchTerm) ||
-               title?.trim().includes(searchTerm);
-      })
-      .slice(0, 50); // Show more local results for better UX
+    // Show search results from backend (propSearchResults) if available
+    if (propSearchResults.length > 0) {
+      setSearchResults(propSearchResults);
+      setShowSearchResults(true);
+      console.log('Using backend search results:', propSearchResults.length, 'songs'); // Debug log
+    } else {
+      // Fallback to local search if no backend results yet
+      const searchTerm = query.toLowerCase();
+      const localResults = availableSongs
+        .filter(song => {
+          const songLower = song.toLowerCase();
+          const [artist, title] = songLower.split(':');
+          return songLower.includes(searchTerm) || 
+                 artist?.trim().includes(searchTerm) ||
+                 title?.trim().includes(searchTerm);
+        })
+        .slice(0, 20); // Show fewer local results since we have backend search
 
-    setSearchResults(localResults);
-    setShowSearchResults(localResults.length > 0);
-    
-    // No need to stop loading since we're not showing loading for search
-    // setTimeout(() => {
-    //   setIsLoading(false);
-    // }, 1000); // Removed - no loading state for search
-  }, [availableSongs, sendMessage]);
+      setSearchResults(localResults);
+      setShowSearchResults(localResults.length > 0);
+      console.log('Using local search results:', localResults.length, 'songs'); // Debug log
+    }
+  }, [availableSongs, sendMessage, propSearchResults]);
 
   // Handle search input changes with debouncing
   const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -167,10 +178,13 @@ export default function PlaylistSidebar({
   // Add song to playlist
   const handleAddSong = useCallback((song: string) => {
     console.log('Adding song:', song); // Debug log
+    console.log('Song format check - contains colon:', song.includes(':')); // Debug log
     setIsLoading(true);
     setError(null);
     
-    sendMessage({ message: `/add ${song}` });
+    const command = `/add ${song}`;
+    console.log('Sending command:', command); // Debug log
+    sendMessage({ message: command });
     
     // Clear search
     setSearchQuery('');
@@ -181,6 +195,12 @@ export default function PlaylistSidebar({
     setTimeout(() => {
       setIsLoading(false);
     }, 500);
+  }, [sendMessage]);
+
+  // Play song
+  const handlePlaySong = useCallback((song: string) => {
+    console.log('Playing song:', song); // Debug log
+    sendMessage({ message: `/play ${song}` });
   }, [sendMessage]);
 
   // Show song deletion confirmation dialog
@@ -412,6 +432,30 @@ export default function PlaylistSidebar({
               <Typography variant="body2" color="text.secondary" sx={{ mt: 1, textAlign: 'center' }}>
                 {playlist.length} songs in {currentPlaylist || 'My Playlist'}
               </Typography>
+              {playlist.length > 0 && (
+                <Box sx={{ mt: 1, display: 'flex', justifyContent: 'center', gap: 2 }}>
+                  <Chip 
+                    label={`${new Set(playlist.map(song => song.split(':')[0].trim())).size} artists`}
+                    size="small"
+                    sx={{ 
+                      backgroundColor: '#e8f5e8', 
+                      color: '#1db954', 
+                      fontSize: '0.7rem',
+                      height: '20px'
+                    }}
+                  />
+                  <Chip 
+                    label={`${playlist.length > 0 ? Math.round((new Set(playlist.map(song => song.split(':')[0].trim())).size / playlist.length) * 100) : 0}% diverse`}
+                    size="small"
+                    sx={{ 
+                      backgroundColor: '#e8f5e8', 
+                      color: '#1db954', 
+                      fontSize: '0.7rem',
+                      height: '20px'
+                    }}
+                  />
+                </Box>
+              )}
             </Box>
             
             {/* Playlist List */}
@@ -517,6 +561,13 @@ export default function PlaylistSidebar({
                     Loading song database...
                   </Typography>
                   <CircularProgress size={16} sx={{ mt: 0.5, color: '#1db954' }} />
+                  <Button 
+                    size="small" 
+                    onClick={() => sendMessage({ message: '/help' })}
+                    sx={{ mt: 1, fontSize: '0.75rem' }}
+                  >
+                    Retry
+                  </Button>
                 </Box>
               )}
 
@@ -579,9 +630,30 @@ export default function PlaylistSidebar({
                               {artist}
                             </Typography>
                           </Box>
-                          <IconButton size="small" sx={{ color: '#1db954' }}>
-                            <AddIcon fontSize="small" />
-                          </IconButton>
+                          <Tooltip title="Play song">
+                            <IconButton 
+                              size="small" 
+                              sx={{ color: '#1db954', mr: 0.5 }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handlePlaySong(song);
+                              }}
+                            >
+                              <PlayIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title="Add to playlist">
+                            <IconButton 
+                              size="small" 
+                              sx={{ color: '#1db954' }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleAddSong(song);
+                              }}
+                            >
+                              <AddIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
                         </Box>
                       </Box>
                     );
@@ -589,6 +661,67 @@ export default function PlaylistSidebar({
                 </Box>
               </Fade>
             </Box>
+
+            {/* Playlist Statistics */}
+            {playlist.length > 0 && (
+              <Box sx={{ px: 2, py: 2, borderBottom: '1px solid #e0e0e0', backgroundColor: '#f8f9fa' }}>
+                <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 'bold', color: '#333333', display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <QueueIcon fontSize="small" />
+                  Playlist Statistics
+                </Typography>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>
+                  {/* Basic Stats */}
+                  <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: '80px' }}>
+                    <Typography variant="h6" sx={{ color: '#1db954', fontWeight: 'bold', lineHeight: 1 }}>
+                      {playlist.length}
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: '#666666', fontSize: '0.7rem' }}>
+                      Total Songs
+                    </Typography>
+                  </Box>
+                  
+                  {/* Unique Artists */}
+                  <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: '80px' }}>
+                    <Typography variant="h6" sx={{ color: '#1db954', fontWeight: 'bold', lineHeight: 1 }}>
+                      {new Set(playlist.map(song => song.split(':')[0].trim())).size}
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: '#666666', fontSize: '0.7rem' }}>
+                      Unique Artists
+                    </Typography>
+                  </Box>
+                  
+                  {/* Diversity Score */}
+                  <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: '80px' }}>
+                    <Typography variant="h6" sx={{ color: '#1db954', fontWeight: 'bold', lineHeight: 1 }}>
+                      {playlist.length > 0 ? Math.round((new Set(playlist.map(song => song.split(':')[0].trim())).size / playlist.length) * 100) : 0}%
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: '#666666', fontSize: '0.7rem' }}>
+                      Diversity
+                    </Typography>
+                  </Box>
+                  
+                  {/* Top Artist */}
+                  {(() => {
+                    const artistCounts: {[key: string]: number} = {};
+                    playlist.forEach(song => {
+                      const artist = song.split(':')[0].trim();
+                      artistCounts[artist] = (artistCounts[artist] || 0) + 1;
+                    });
+                    const topArtist = Object.entries(artistCounts).sort(([,a], [,b]) => b - a)[0];
+                    return topArtist ? (
+                      <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: '120px' }}>
+                        <Typography variant="body2" sx={{ color: '#333333', fontWeight: 'bold', lineHeight: 1, fontSize: '0.8rem' }}>
+                          {topArtist[0]}
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: '#666666', fontSize: '0.7rem' }}>
+                          Top Artist ({topArtist[1]} songs)
+                        </Typography>
+                      </Box>
+                    ) : null;
+                  })()}
+                </Box>
+              </Box>
+            )}
 
             {/* Current Playlist Songs */}
             <Box sx={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
@@ -647,6 +780,16 @@ export default function PlaylistSidebar({
                               sx: { color: '#666666', fontSize: '0.75rem', lineHeight: 1.2 },
                             }}
                           />
+                          <Tooltip title="Play song">
+                            <IconButton
+                              onClick={() => handlePlaySong(song)}
+                              disabled={isLoading}
+                              size="small"
+                              sx={{ color: '#1db954', ml: 0.5 }}
+                            >
+                              <PlayIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
                           <Tooltip title="Remove from playlist">
                             <IconButton
                               onClick={() => handleRemoveSongClick(song)}

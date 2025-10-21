@@ -55,7 +55,7 @@ export default function ChatWidget({ children }: { children: ReactNode }) {
             position: 'fixed',
             bottom: 100,
             right: 24,
-            width: 400,
+            width: 500,
             height: 600,
             zIndex: 999,
             borderRadius: 3,

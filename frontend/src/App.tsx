@@ -9,6 +9,7 @@ import LoginForm from "./components/LoginForm/LoginForm";
 import ChatWidget from "./components/Widget/ChatWidget";
 import PlaylistPanel from "./components/PlaylistPanel/PlaylistPanel";
 import Header from "./components/Header/Header";
+import SpotifyPlayer from "./components/SpotifyPlayer/SpotifyPlayer";
 import { useSocket } from "./contexts/SocketContext";
 import { ChatMessage } from "./types";
 
@@ -40,35 +41,80 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [allPlaylists, setAllPlaylists] = useState<{[key: string]: string[]}>({});
   const [generatedCoverImages, setGeneratedCoverImages] = useState<{[playlistName: string]: string}>({});
+  const [searchResults, setSearchResults] = useState<string[]>([]);
+  const [currentTrackInfo, setCurrentTrackInfo] = useState<any>(null);
+  const [spotifyAccessToken, setSpotifyAccessToken] = useState<string | null>(null);
 
   // Initialize socket connection and load song database immediately
   useEffect(() => {
     startConversation();
+    
+    // Check for Spotify authentication
+    checkSpotifyAuth();
+    
     // Load available songs automatically to enable search functionality
     const timer = setTimeout(() => {
       sendMessage({ message: '/help' });
     }, 1000);
     
-    return () => clearTimeout(timer);
-  }, [startConversation, sendMessage]);
+    // Fallback: if no songs loaded after 5 seconds, try again
+    const fallbackTimer = setTimeout(() => {
+      if (availableSongs.length === 0) {
+        console.log('No songs loaded, retrying...');
+        sendMessage({ message: '/help' });
+      }
+    }, 5000);
+    
+    return () => {
+      clearTimeout(timer);
+      clearTimeout(fallbackTimer);
+    };
+  }, [startConversation, sendMessage, availableSongs.length]);
+
+  // Check Spotify authentication status
+  const checkSpotifyAuth = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/auth/status');
+      const data = await response.json();
+      
+      if (data.authenticated) {
+        console.log('✅ Spotify authenticated:', data.token);
+        // Get the full token
+        const tokenResponse = await fetch('http://localhost:5000/auth/token');
+        const tokenData = await tokenResponse.json();
+        setSpotifyAccessToken(tokenData.access_token);
+      } else {
+        console.log('⚠️ Spotify authentication required');
+        console.log('🔗 Visit: http://localhost:5000/auth/login');
+      }
+    } catch (error) {
+      console.log('⚠️ Spotify auth server not running:', error);
+      console.log('🚀 Start MusicCRS server to enable authentication');
+    }
+  };
 
   // Handle all socket messages in App component
   useEffect(() => {
     onMessage((message: ChatMessage) => {
       console.log('App received message:', message.text); // Debug log
       
-      // Add all messages to chat history for display
-      setChatMessages(prev => [...prev, message]);
+      // Add all messages to chat history for display (mark as agent messages)
+      const agentMessage: ChatMessage = {
+        ...message,
+        participant: 'agent',
+        timestamp: new Date().toISOString()
+      };
+      setChatMessages(prev => [...prev, agentMessage]);
       
       // Handle song database loading - now loads all songs
-      if (message.text && (message.text.includes("**Available Songs (first") || message.text.includes("**Available Songs (sample):**"))) {
+      if (message.text && (message.text.includes("**Sample Songs (showing") || message.text.includes("**Available Songs"))) {
         // Extract available songs from help command response
         const lines = message.text.split('\n');
         const songs: string[] = [];
         let inSongsSection = false;
         
         for (const line of lines) {
-          if (line.includes("**Available Songs (first") || line.includes("**Available Songs (sample):**")) {
+          if (line.includes("**Sample Songs (showing") || line.includes("**Available Songs")) {
             inSongsSection = true;
             continue;
           }
@@ -120,10 +166,49 @@ export default function App() {
         return; // Don't process as playlist update
       }
       
-      // Handle search results - don't process as playlist updates
+      // Handle Spotify track info responses
+      if (message.text && message.text.includes("SPOTIFY_TRACK_INFO:")) {
+        console.log('Spotify track info received:', message.text); // Debug log
+        
+        try {
+          const jsonMatch = message.text.match(/SPOTIFY_TRACK_INFO:\s*(.+)/);
+          if (jsonMatch) {
+            const trackData = JSON.parse(jsonMatch[1]);
+            console.log('Parsed track data:', trackData); // Debug log
+            setCurrentTrackInfo(trackData);
+          }
+        } catch (error) {
+          console.error('Error parsing Spotify track info:', error);
+        }
+        
+        return; // Skip other processing
+      }
+      
+      // Handle search results - extract songs and update search results
       if (message.text && (message.text.includes("Found") && message.text.includes("songs matching") || 
           message.text.includes("No songs found matching"))) {
-        console.log('Search results received, skipping playl ist processing'); // Debug log
+        console.log('Search results received, processing...'); // Debug log
+        
+        // Extract songs from search results
+        const lines = message.text.split('\n');
+        const songs: string[] = [];
+        let inResultsSection = false;
+        
+        for (const line of lines) {
+          // Look for numbered list items (1. Artist: Song)
+          const match = line.match(/^\d+\.\s*(.+)$/);
+          if (match) {
+            songs.push(match[1].trim());
+          }
+        }
+        
+        if (songs.length > 0) {
+          console.log('Extracted', songs.length, 'songs from search results'); // Debug log
+          setSearchResults(songs);
+        } else {
+          setSearchResults([]);
+        }
+        
         return; // Skip all playlist processing for search results
       }
       
@@ -212,6 +297,7 @@ export default function App() {
           }
         }
         console.log('App parsed songs:', songs, 'for playlist:', playlistName); // Debug log
+        console.log('Setting playlist state to:', songs); // Debug log
         setPlaylist(songs);
         
         // Update the songs for the specific playlist in allPlaylists
@@ -235,8 +321,9 @@ export default function App() {
         // The actual state changes were already handled by the add/remove messages
       } else if (message.text && message.text.includes("Added '")) {
         // When a song is added, refresh the playlist view
-        console.log('Song added, refreshing playlist...'); // Debug log
+        console.log('Song added, refreshing playlist...', message.text); // Debug log
         setTimeout(() => {
+          console.log('Sending /view command...'); // Debug log
           sendMessage({ message: '/view' });
         }, 500);
       } else if (message.text && message.text.includes("Removed '")) {
@@ -396,8 +483,21 @@ export default function App() {
   }, [onMessage, sendMessage]);
 
   const handleSendMessage = useCallback((message: string) => {
+    // Add user message to chat display immediately
+    const userMessage: ChatMessage = {
+      text: message,
+      participant: 'user',
+      timestamp: new Date().toISOString()
+    };
+    setChatMessages(prev => [...prev, userMessage]);
+    
+    // Send message to backend
     sendMessage({ message });
   }, [sendMessage]);
+
+  const handleClearChat = useCallback(() => {
+    setChatMessages([]);
+  }, []);
 
   
   return (
@@ -418,13 +518,14 @@ export default function App() {
                 <ChatBox 
                   messages={chatMessages}
                   onSendMessage={handleSendMessage}
+                  onClearChat={handleClearChat}
                 />
               )}
             </ChatWidget>
           </Box>
           
           {/* Playlist Panel - Takes full remaining space */}
-          <Box sx={{ flex: 1, borderLeft: '1px solid #e0e0e0' }}>
+          <Box sx={{ flex: 1, borderLeft: '1px solid #e0e0e0', display: 'flex', flexDirection: 'column' }}>
             <PlaylistPanel
               playlist={playlist}
               availableSongs={availableSongs}
@@ -432,7 +533,18 @@ export default function App() {
               currentPlaylist={currentPlaylist}
               allPlaylists={allPlaylists}
               generatedCoverImage={generatedCoverImages[currentPlaylist] || null}
+              searchResults={searchResults}
             />
+            
+            {/* Spotify Player - Show when track info is available */}
+            {currentTrackInfo && (
+              <Box sx={{ borderTop: '1px solid #e0e0e0', height: '120px' }}>
+                <SpotifyPlayer 
+                  trackInfo={currentTrackInfo}
+                  accessToken={spotifyAccessToken}
+                />
+              </Box>
+            )}
           </Box>
         </Box>
       </Box>
