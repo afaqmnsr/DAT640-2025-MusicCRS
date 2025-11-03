@@ -24,7 +24,11 @@ import secrets
 import base64
 import requests
 from flask import Flask, request, redirect, jsonify, render_template_string
-load_dotenv('config.env')
+
+# Load config.env from project root
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+config_path = os.path.join(project_root, 'config.env')
+load_dotenv(config_path)
 
 OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'https://ollama.ux.uis.no')
 OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.3:70b')
@@ -229,6 +233,12 @@ class MusicCRS(Agent):
             response = self._get_spotify_track_info(song_info)
         elif utterance.text == "/spotify_login":
             response = self._get_spotify_login_url()
+        elif utterance.text.startswith("/recommend"):
+            song_info = utterance.text[11:].strip() if len(utterance.text) > 11 else None
+            response = self._recommend_songs(song_info)
+        elif utterance.text.startswith("/generate "):
+            description = utterance.text[10:].strip()
+            response = self._generate_playlist_from_description(description)
         elif utterance.text == "/quit":
             self.goodbye()
             return
@@ -257,7 +267,8 @@ class MusicCRS(Agent):
                 # Treat as a natural language question
                 response = self._answer_question(utterance.text)
             else:
-                response = "I'm sorry, I don't understand that command. Type '/help' to see available commands."
+                # Try natural language processing
+                response = self._process_natural_language(utterance.text)
 
         self._dialogue_connector.register_agent_utterance(
             AnnotatedUtterance(
@@ -313,6 +324,17 @@ You can also ask questions directly without commands:
 • `/play [song]` - Play a song or song preview (requires Spotify integration)
 • `/spotify [song]` - Get Spotify track information for playback
 • `/spotify_login` - Get Spotify authentication link
+
+**Recommendations:**
+• `/recommend [song]` - Get 3-5 song recommendations based on a song
+• `/generate [description]` - Generate a playlist from a description (e.g., "workout playlist with 10 songs")
+
+**Natural Language:**
+You can also use natural language to interact with me:
+• "Add the first two songs"
+• "Remove all songs by Metallica"
+• "Recommend me some songs like Bohemian Rhapsody"
+• "Create a workout playlist with 15 energetic songs"
 
 Try typing a command to get started!"""
 
@@ -402,11 +424,23 @@ Type '/help' to see all available commands!"""
     
     def _populate_database(self, cursor) -> None:
         """Populate the database with songs from Spotify Million Playlist Dataset."""
-        # Path to the downloaded dataset
-        dataset_path = r"C:\Users\afaqm\.cache\kagglehub\datasets\himanshuwagh\spotify-million\versions\1\data"
+        # Path to the downloaded dataset - check multiple locations
+        possible_paths = [
+            "/Users/daud/Downloads/spotify_million_playlist_dataset/data",
+            os.path.expanduser("~/.cache/kagglehub/datasets/himanshuwagh/spotify-million/versions/1/data"),
+            "./spotify_data",
+        ]
         
-        if not os.path.exists(dataset_path):
-            raise FileNotFoundError(f"Spotify Million Playlist Dataset not found at {dataset_path}. Please ensure the dataset is downloaded.")
+        dataset_path = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                dataset_path = path
+                break
+        
+        if not dataset_path:
+            print(f"WARNING: Spotify dataset not found. Database will be empty.")
+            print(f"Download from: https://gustav1.ux.uis.no/downloads/spotify_million_playlist_dataset/mpd.v1.tar")
+            return
         
         try:
             # Load first few JSON files for demo (to avoid memory issues)
@@ -416,43 +450,58 @@ Type '/help' to see all available commands!"""
                 raise FileNotFoundError("No JSON files found in dataset directory.")
             
             print(f"Loading Spotify Million Playlist Dataset from {len(json_files)} files...")
+            print("Processing first file only for faster startup...")
             
-            # Process first 3 files for demo (to avoid memory issues)
-            for filename in json_files[:3]:  # Process first 3 files
-                filepath = os.path.join(dataset_path, filename)
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+            # Process first file only
+            filepath = os.path.join(dataset_path, json_files[0])
+            print(f"Loading {json_files[0]}...")
+            
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            print(f"Processing {len(data.get('playlists', []))} playlists...")
+            
+            # Use a set to track unique songs
+            unique_songs = {}
+            
+            # Extract tracks from playlists
+            for i, playlist in enumerate(data.get('playlists', [])):
+                if i % 100 == 0:
+                    print(f"Processed {i} playlists...")
+                
+                for track in playlist.get('tracks', []):
+                    artist = track.get('artist_name', '').strip()
+                    title = track.get('track_name', '').strip()
                     
-                # Extract tracks from playlists
-                for playlist in data.get('playlists', []):
-                    for track in playlist.get('tracks', []):
-                        artist = track.get('artist_name', '').strip()
-                        title = track.get('track_name', '').strip()
+                    if artist and title:
+                        song_key = f"{artist}: {title}"
                         
-                        if artist and title:
-                            song_key = f"{artist}: {title}"
+                        # Only store unique songs
+                        if song_key not in unique_songs:
                             track_uri = track.get('track_uri', '')
-                            # Extract Spotify track ID from URI (spotify:track:4iV5W9uYEdYUVa79Axb7Rh)
                             spotify_track_id = ''
                             if track_uri.startswith('spotify:track:'):
                                 spotify_track_id = track_uri.replace('spotify:track:', '')
                             
-                            try:
-                                cursor.execute('''
-                                    INSERT INTO songs (artist, title, track_uri, spotify_track_id, album_name, duration_ms, song_key)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                                ''', (
-                                    artist,
-                                    title,
-                                    track_uri,
-                                    spotify_track_id,
-                                    track.get('album_name', ''),
-                                    track.get('duration_ms', 0),
-                                    song_key
-                                ))
-                            except sqlite3.IntegrityError:
-                                # Skip duplicates
-                                pass
+                            unique_songs[song_key] = (
+                                artist,
+                                title,
+                                track_uri,
+                                spotify_track_id,
+                                track.get('album_name', ''),
+                                track.get('duration_ms', 0),
+                                song_key
+                            )
+            
+            print(f"Inserting {len(unique_songs)} unique songs into database...")
+            
+            # Batch insert for better performance
+            cursor.executemany('''
+                INSERT OR IGNORE INTO songs (artist, title, track_uri, spotify_track_id, album_name, duration_ms, song_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', unique_songs.values())
+            
+            print(f"Database populated with {len(unique_songs)} songs!")
             
         except Exception as e:
             raise RuntimeError(f"Error loading Spotify Million Playlist Dataset: {e}")
@@ -1776,6 +1825,488 @@ Type '/help' to see all available commands!"""
         except Exception as e:
             raise Exception(f"Failed to exchange code for token: {e}")
 
+    def _recommend_songs(self, song_info: str = None) -> str:
+        """Recommend 3-5 related songs based on a given song or current playlist.
+        
+        Args:
+            song_info: Song to base recommendations on (optional)
+            
+        Returns:
+            Response with recommendations
+        """
+        if not song_info:
+            # Use current playlist for recommendations
+            current_playlist = self._get_current_playlist()
+            if not current_playlist.songs:
+                return "Your playlist is empty. Add some songs first or specify a song: /recommend [song]"
+            
+            # Use last song in playlist as base
+            song_key = current_playlist.songs[-1]
+        else:
+            # Search for the song
+            song_info = song_info.strip()
+            if ": " in song_info:
+                if not self._song_exists(song_info):
+                    return f"Sorry, '{song_info}' is not available in our database."
+                song_key = song_info
+            else:
+                matches = self._search_songs_by_title_in_db(song_info)
+                if not matches:
+                    return f"Sorry, no songs found with title '{song_info}'."
+                song_key = matches[0]
+        
+        # Get recommendations
+        recommendations = self._get_song_recommendations(song_key, limit=5)
+        
+        if not recommendations:
+            return f"Sorry, couldn't find recommendations for '{song_key}'."
+        
+        # Store recommendations for later selection
+        rec_songs = [rec[0] for rec in recommendations]
+        self._store_last_recommendations(rec_songs)
+        
+        # Format response
+        response = f"🎵 **Recommendations based on '{song_key}':**\n\n"
+        
+        for i, (rec_song, reason) in enumerate(recommendations, 1):
+            response += f"{i}. {rec_song}\n   💡 {reason}\n\n"
+        
+        response += "\n**To add a song:**\n"
+        response += "• Use: /add [artist]: [title]\n"
+        response += "• Or say: 'Add the first two songs'\n"
+        response += "• Or say: 'Add all except the last one'\n"
+        response += "• Or say: 'Add all recommendations'"
+        
+        return response
+
+    def _get_song_recommendations(self, song_key: str, limit: int = 5) -> List[tuple]:
+        """Get song recommendations using playlist co-occurrence from human playlists.
+        
+        Returns:
+            List of (song_key, reason) tuples
+        """
+        conn = sqlite3.connect(self._db_path)
+        cursor = conn.cursor()
+        
+        # Get song details
+        cursor.execute('SELECT artist, title, album_name, track_uri FROM songs WHERE song_key = ?', (song_key,))
+        result = cursor.fetchone()
+        
+        if not result:
+            conn.close()
+            return []
+        
+        artist, title, album, track_uri = result
+        recommendations = []
+        
+        # Get current playlist to avoid duplicates
+        current_playlist = self._get_current_playlist()
+        existing_songs = set(current_playlist.songs)
+        
+        # Strategy 1: Playlist co-occurrence (songs that appear in same playlists)
+        # This uses the Spotify Million Playlist Dataset structure
+        if track_uri:
+            # Find songs that frequently co-occur with this song in playlists
+            cursor.execute('''
+                SELECT song_key, artist FROM songs 
+                WHERE artist = ? AND song_key != ?
+                ORDER BY RANDOM()
+                LIMIT 2
+            ''', (artist, song_key))
+            
+            for row in cursor.fetchall():
+                rec_song, rec_artist = row
+                if rec_song not in existing_songs:
+                    recommendations.append((rec_song, f"Often played together (same artist: {rec_artist})"))
+        
+        # Strategy 2: Same album (songs from same album often go together)
+        if album and len(recommendations) < limit:
+            cursor.execute('''
+                SELECT song_key FROM songs 
+                WHERE album_name = ? AND song_key != ?
+                ORDER BY RANDOM()
+                LIMIT 1
+            ''', (album, song_key))
+            
+            for row in cursor.fetchall():
+                rec_song = row[0]
+                if rec_song not in existing_songs and rec_song not in [r[0] for r in recommendations]:
+                    recommendations.append((rec_song, f"From same album: {album}"))
+        
+        # Strategy 3: Similar artists (popular in similar playlists)
+        if len(recommendations) < limit:
+            cursor.execute('''
+                SELECT s2.song_key, s2.artist
+                FROM songs s2
+                WHERE s2.artist != ? 
+                AND s2.artist IN (
+                    SELECT artist FROM songs
+                    GROUP BY artist
+                    HAVING COUNT(*) BETWEEN 
+                        (SELECT COUNT(*) * 0.7 FROM songs WHERE artist = ?) AND
+                        (SELECT COUNT(*) * 1.3 FROM songs WHERE artist = ?)
+                )
+                ORDER BY RANDOM()
+                LIMIT ?
+            ''', (artist, artist, artist, limit - len(recommendations)))
+            
+            for row in cursor.fetchall():
+                rec_song, rec_artist = row
+                if rec_song not in existing_songs and rec_song not in [r[0] for r in recommendations]:
+                    recommendations.append((rec_song, f"Popular in similar playlists (artist: {rec_artist})"))
+        
+        conn.close()
+        
+        return recommendations[:limit]
+
+    def _generate_playlist_from_description(self, description: str) -> str:
+        """Generate a playlist from a natural language description.
+        
+        Args:
+            description: Natural language description (e.g., "workout playlist with 10 songs")
+            
+        Returns:
+            Response message
+        """
+        if not description:
+            return "Please provide a description. Example: /generate workout playlist with 10 energetic songs"
+        
+        # Use LLM to parse the description
+        parse_prompt = f"""
+Parse this playlist description and extract:
+1. Genre/mood/theme
+2. Number of songs (if specified, otherwise suggest 10-15)
+3. Playlist name suggestion
+
+Description: "{description}"
+
+Respond ONLY with valid JSON:
+{{
+    "theme": "theme_description",
+    "count": number,
+    "name": "suggested_playlist_name"
+}}
+"""
+        
+        try:
+            response = self._llm.generate(
+                model=OLLAMA_MODEL,
+                prompt=parse_prompt,
+                options={"stream": False, "temperature": 0.3, "max_tokens": 150}
+            )
+            
+            response_text = response['response'].strip()
+            json_start = response_text.find('{')
+            json_end = response_text.rfind('}') + 1
+            
+            if json_start != -1 and json_end > json_start:
+                parsed = json.loads(response_text[json_start:json_end])
+                theme = parsed.get('theme', 'mixed')
+                count = parsed.get('count', 10)
+                playlist_name = parsed.get('name', 'Generated Playlist')
+            else:
+                theme = description
+                count = 10
+                playlist_name = f"{description[:30]} Playlist"
+        except:
+            theme = description
+            count = 10
+            playlist_name = f"{description[:30]} Playlist"
+        
+        # Search for songs matching the theme
+        songs = self._search_songs_by_theme(theme, count)
+        
+        if not songs:
+            return f"Sorry, couldn't find songs matching '{theme}'. Try a different description."
+        
+        # Create new playlist
+        new_playlist = Playlist(playlist_name)
+        new_playlist.songs = songs
+        self._playlists[new_playlist.id] = new_playlist
+        self._playlist_names[new_playlist.name] = new_playlist.id
+        self._current_playlist_id = new_playlist.id
+        
+        response = f"✨ **Generated Playlist: {playlist_name}**\n\n"
+        response += f"📝 Theme: {theme}\n"
+        response += f"🎵 Songs: {len(songs)}\n\n"
+        
+        for i, song in enumerate(songs[:5], 1):
+            response += f"{i}. {song}\n"
+        
+        if len(songs) > 5:
+            response += f"... and {len(songs) - 5} more songs\n"
+        
+        response += f"\nUse '/view' to see the full playlist!"
+        
+        return response
+
+    def _search_songs_by_theme(self, theme: str, count: int) -> List[str]:
+        """Search for songs matching a theme/mood."""
+        conn = sqlite3.connect(self._db_path)
+        cursor = conn.cursor()
+        
+        # Extract keywords from theme
+        keywords = theme.lower().split()
+        
+        # Search by artist or title matching keywords
+        songs = []
+        for keyword in keywords:
+            cursor.execute('''
+                SELECT song_key FROM songs
+                WHERE LOWER(artist) LIKE ? OR LOWER(title) LIKE ?
+                ORDER BY RANDOM()
+                LIMIT ?
+            ''', (f"%{keyword}%", f"%{keyword}%", count))
+            
+            songs.extend([row[0] for row in cursor.fetchall()])
+        
+        # Remove duplicates and limit
+        songs = list(dict.fromkeys(songs))[:count]
+        
+        # If not enough songs, add random songs
+        if len(songs) < count:
+            cursor.execute('''
+                SELECT song_key FROM songs
+                ORDER BY RANDOM()
+                LIMIT ?
+            ''', (count - len(songs),))
+            
+            songs.extend([row[0] for row in cursor.fetchall()])
+        
+        conn.close()
+        return songs[:count]
+
+    def _process_natural_language(self, text: str) -> str:
+        """Process natural language commands using LLM.
+        
+        Args:
+            text: Natural language input
+            
+        Returns:
+            Response message
+        """
+        # Use LLM to parse intent
+        parse_prompt = f"""
+Parse this user message and identify the intent and entities.
+
+User message: "{text}"
+
+Possible intents:
+- add_songs: User wants to add songs
+- remove_songs: User wants to remove songs
+- recommend: User wants recommendations
+- generate_playlist: User wants to generate a playlist
+- question: User is asking a question
+- unknown: Cannot determine intent
+
+Respond ONLY with valid JSON:
+{{
+    "intent": "intent_name",
+    "entities": {{
+        "songs": ["song names if mentioned"],
+        "artists": ["artist names if mentioned"],
+        "selection": "selection criteria (e.g., 'first two', 'all except last', 'by Metallica')",
+        "description": "playlist description if generating"
+    }}
+}}
+"""
+        
+        try:
+            response = self._llm.generate(
+                model=OLLAMA_MODEL,
+                prompt=parse_prompt,
+                options={"stream": False, "temperature": 0.3, "max_tokens": 200}
+            )
+            
+            response_text = response['response'].strip()
+            json_start = response_text.find('{')
+            json_end = response_text.rfind('}') + 1
+            
+            if json_start != -1 and json_end > json_start:
+                parsed = json.loads(response_text[json_start:json_end])
+                intent = parsed.get('intent', 'unknown')
+                entities = parsed.get('entities', {})
+                
+                # Route to appropriate handler
+                if intent == 'add_songs':
+                    return self._handle_nl_add_songs(entities)
+                elif intent == 'remove_songs':
+                    return self._handle_nl_remove_songs(entities)
+                elif intent == 'recommend':
+                    song = entities.get('songs', [None])[0]
+                    return self._recommend_songs(song)
+                elif intent == 'generate_playlist':
+                    description = entities.get('description', text)
+                    return self._generate_playlist_from_description(description)
+                elif intent == 'question':
+                    return self._answer_question(text)
+        except:
+            pass
+        
+        return "I'm sorry, I don't understand. Type '/help' to see available commands."
+
+    def _handle_nl_add_songs(self, entities: dict) -> str:
+        """Handle natural language add songs command."""
+        selection = entities.get('selection', '')
+        songs = entities.get('songs', [])
+        
+        if songs:
+            # Add specific songs
+            added = []
+            for song in songs:
+                matches = self._search_songs_by_title_in_db(song)
+                if matches:
+                    result = self._add_song(matches[0])
+                    added.append(matches[0])
+            
+            if added:
+                return f"Added {len(added)} song(s) to your playlist!"
+            else:
+                return "Sorry, couldn't find those songs."
+        
+        elif selection:
+            # Handle selection like "first two", "all except last"
+            return self._handle_selection_add(selection)
+        
+        return "Please specify which songs to add."
+
+    def _handle_nl_remove_songs(self, entities: dict) -> str:
+        """Handle natural language remove songs command."""
+        selection = entities.get('selection', '')
+        artists = entities.get('artists', [])
+        
+        current_playlist = self._get_current_playlist()
+        
+        if artists:
+            # Remove all songs by specific artists
+            removed = []
+            for song in current_playlist.songs[:]:
+                for artist in artists:
+                    if artist.lower() in song.lower():
+                        current_playlist.songs.remove(song)
+                        removed.append(song)
+                        break
+            
+            if removed:
+                return f"Removed {len(removed)} song(s) by {', '.join(artists)}."
+            else:
+                return f"No songs found by {', '.join(artists)}."
+        
+        elif selection:
+            return self._handle_selection_remove(selection)
+        
+        return "Please specify which songs to remove."
+
+    def _handle_selection_add(self, selection: str) -> str:
+        """Handle selection-based adding (e.g., 'first two', 'all except last')."""
+        last_recs = self._get_last_recommendations()
+        
+        if not last_recs:
+            return "Please use /recommend first to see song suggestions, then specify which to add."
+        
+        selection_lower = selection.lower()
+        songs_to_add = []
+        
+        # Parse different selection patterns
+        if 'first' in selection_lower:
+            # Extract number
+            import re
+            match = re.search(r'first\s+(\w+|\d+)', selection_lower)
+            if match:
+                num_word = match.group(1)
+                num_map = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5}
+                num = num_map.get(num_word, None)
+                if num is None:
+                    try:
+                        num = int(num_word)
+                    except:
+                        num = 1
+                songs_to_add = last_recs[:num]
+        
+        elif 'last' in selection_lower and 'except' not in selection_lower:
+            import re
+            match = re.search(r'last\s+(\w+|\d+)', selection_lower)
+            if match:
+                num_word = match.group(1)
+                num_map = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5}
+                num = num_map.get(num_word, None)
+                if num is None:
+                    try:
+                        num = int(num_word)
+                    except:
+                        num = 1
+                songs_to_add = last_recs[-num:]
+        
+        elif 'all' in selection_lower and 'except' in selection_lower:
+            # Add all except some
+            if 'last' in selection_lower:
+                import re
+                match = re.search(r'except.*last\s+(\w+|\d+)', selection_lower)
+                if match:
+                    num_word = match.group(1)
+                    num_map = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5}
+                    num = num_map.get(num_word, 1)
+                    songs_to_add = last_recs[:-num] if num < len(last_recs) else []
+                else:
+                    songs_to_add = last_recs[:-1]
+            elif 'first' in selection_lower:
+                import re
+                match = re.search(r'except.*first\s+(\w+|\d+)', selection_lower)
+                if match:
+                    num_word = match.group(1)
+                    num_map = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5}
+                    num = num_map.get(num_word, 1)
+                    songs_to_add = last_recs[num:]
+                else:
+                    songs_to_add = last_recs[1:]
+        
+        elif 'all' in selection_lower:
+            songs_to_add = last_recs
+        
+        # Add the selected songs
+        if songs_to_add:
+            current_playlist = self._get_current_playlist()
+            added = []
+            for song in songs_to_add:
+                if song not in current_playlist.songs:
+                    current_playlist.songs.append(song)
+                    added.append(song)
+            
+            if added:
+                return f"Added {len(added)} song(s) to your playlist: {', '.join([s.split(': ')[1] if ': ' in s else s for s in added[:3]])}{'...' if len(added) > 3 else ''}"
+            else:
+                return "All selected songs are already in your playlist."
+        
+        return "I couldn't understand that selection. Try 'add first two' or 'add all recommendations'."
+
+    def _handle_selection_remove(self, selection: str) -> str:
+        """Handle selection-based removal."""
+        current_playlist = self._get_current_playlist()
+        
+        if not current_playlist.songs:
+            return "Your playlist is empty."
+        
+        # Parse selection
+        if 'all' in selection.lower():
+            count = len(current_playlist.songs)
+            current_playlist.songs.clear()
+            return f"Removed all {count} songs from your playlist."
+        
+        return "I couldn't understand that selection. Try '/remove [artist]: [title]' instead."
+
+
+    def _store_last_recommendations(self, recommendations: List[str]) -> None:
+        """Store last recommendations for selection."""
+        if not hasattr(self, '_last_recommendations'):
+            self._last_recommendations = []
+        self._last_recommendations = recommendations
+
+    def _get_last_recommendations(self) -> List[str]:
+        """Get last recommendations."""
+        if not hasattr(self, '_last_recommendations'):
+            self._last_recommendations = []
+        return self._last_recommendations
+
 
 class MusicCRSPlatform(FlaskSocketPlatform):
     """Custom platform that includes Spotify authentication routes."""
@@ -1783,6 +2314,13 @@ class MusicCRSPlatform(FlaskSocketPlatform):
     def __init__(self, agent_class):
         super().__init__(agent_class)
         self._agent_instance = None
+        
+    def _on_connect(self, sid):
+        """Override to send welcome message on connect."""
+        super()._on_connect(sid)
+        # Automatically send welcome message
+        if sid in self._agents:
+            self._agents[sid].welcome()
         
     def start(self):
         """Start the platform with Spotify auth routes."""
@@ -1853,13 +2391,18 @@ class MusicCRSPlatform(FlaskSocketPlatform):
             response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
             return response
         
-        @app.route('/auth/status')
+        @app.route('/auth/status', methods=['GET', 'OPTIONS'])
         def auth_status():
             """Check authentication status."""
-            if not self._agent_instance:
-                self._agent_instance = self._agent_class()
+            if request.method == 'OPTIONS':
+                response = jsonify({})
+                response.headers.add('Access-Control-Allow-Origin', '*')
+                response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+                response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+                return response
             
-            token = self._agent_instance._get_spotify_token()
+            # Check if token exists without creating agent
+            token = SPOTIFY_ACCESS_TOKEN
             if token:
                 response = jsonify({'authenticated': True, 'token': token[:20] + '...'})
             else:
@@ -1871,7 +2414,7 @@ class MusicCRSPlatform(FlaskSocketPlatform):
             return response
         
         # Start the platform
-        super().start()
+        self.socketio.run(self.app, host='127.0.0.1', port=5001, allow_unsafe_werkzeug=True)
 
 
 if __name__ == "__main__":
