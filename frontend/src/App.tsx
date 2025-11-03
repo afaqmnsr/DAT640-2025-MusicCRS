@@ -237,6 +237,64 @@ export default function App() {
         return;
       }
       
+      // Handle playlist generation
+      if (message.text && message.text.includes("✨ **Generated Playlist:")) {
+        console.log('Playlist generated, updating state...'); // Debug log
+        
+        // Extract playlist name from generation message - use the same name format as in _view_playlist
+        const generateMatch = message.text.match(/\*\*Generated Playlist: (.+?)\*\*/);
+        // Also extract from the playlist view section to ensure exact match
+        const viewMatch = message.text.match(/\*\*Your Current Playlist: (.+?)\*\*/);
+        
+        let newPlaylistName = '';
+        if (generateMatch) {
+          newPlaylistName = generateMatch[1].trim();
+        } else if (viewMatch) {
+          newPlaylistName = viewMatch[1].trim();
+        }
+        
+        if (newPlaylistName) {
+          console.log('Generated new playlist:', newPlaylistName); // Debug log
+          
+          // Update current playlist
+          setCurrentPlaylist(newPlaylistName);
+          
+          // Parse playlist list from the response
+          const listMatch = message.text.match(/\*\*Available Playlists:\*\*\s*\n((?:\d+\.\s*.+\n?)+)/);
+          if (listMatch) {
+            const listLines = listMatch[1].split('\n').filter(line => line.trim());
+            const newPlaylistList = listLines.map(line => {
+              // Match format: "1. Playlist Name (X songs)" or "1. Playlist Name"
+              const match = line.match(/\d+\.\s*(.+?)(?:\s*\(\d+\s+songs?\))?$/);
+              return match ? match[1].trim() : '';
+            }).filter(name => name);
+            
+            console.log('Parsed playlist list:', newPlaylistList);
+            
+            // Update playlist list but preserve existing allPlaylists data
+            setPlaylistList(newPlaylistList);
+          } else {
+            // Fallback: add to existing list
+            setPlaylistList(prev => {
+              if (!prev.includes(newPlaylistName)) {
+                return [...prev, newPlaylistName];
+              }
+              return prev;
+            });
+          }
+          
+          // Initialize/clear the playlist in allPlaylists to prevent accumulation
+          setAllPlaylists(prev => {
+            const updated = { ...prev };
+            // Don't initialize as empty - let the playlist view update set it
+            // This ensures the count matches exactly what's in the view
+            return updated;
+          });
+        }
+        
+        // Continue processing to handle playlist view update
+      }
+      
       // Handle playlist creation
       if (message.text && message.text.includes("Created new playlist") && message.text.includes("and switched to it")) {
         console.log('Playlist created, updating state...'); // Debug log

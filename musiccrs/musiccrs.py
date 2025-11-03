@@ -193,7 +193,9 @@ class MusicCRS(Agent):
             response = self._help()
         elif utterance.text.startswith("/add "):
             song_info = utterance.text[5:]  # Remove "/add "
-            response = self._add_song(song_info)
+            # R5.6: Normalize song name for better matching of complex names
+            normalized = self._normalize_song_name(song_info)
+            response = self._add_song(normalized)
         elif utterance.text.startswith("/remove "):
             song_info = utterance.text[8:]  # Remove "/remove "
             response = self._remove_song(song_info)
@@ -234,8 +236,28 @@ class MusicCRS(Agent):
         elif utterance.text == "/spotify_login":
             response = self._get_spotify_login_url()
         elif utterance.text.startswith("/recommend"):
-            song_info = utterance.text[11:].strip() if len(utterance.text) > 11 else None
-            response = self._recommend_songs(song_info)
+            # Extract song info - ignore selection commands
+            recommend_part = utterance.text[11:].strip()
+            
+            # If it starts with selection keywords, treat as no song specified
+            if recommend_part.lower().startswith(('add', 'select', 'choose')):
+                # User likely meant to do /recommend first, then selection separately
+                response = self._recommend_songs(None)
+                response += "\n\n💡 **Tip:** After seeing recommendations, use a separate message to add songs:\n"
+                response += "• 'Add the first two songs'\n"
+                response += "• '/select_recommendation 1,3,5'\n"
+                response += "• 'Add all recommendations'"
+            else:
+                # Extract song info, ignoring any trailing selection commands
+                import re
+                # Remove common selection patterns at the end
+                song_info = re.sub(r'\s+(?:add|select|choose).*$', '', recommend_part, flags=re.IGNORECASE)
+                song_info = song_info.strip()
+                response = self._recommend_songs(song_info if song_info else None)
+        elif utterance.text.startswith("/select_recommendation "):
+            # R4.2: Select recommendations by index
+            selection = utterance.text[23:].strip()
+            response = self._select_recommendation(selection)
         elif utterance.text.startswith("/generate "):
             description = utterance.text[10:].strip()
             response = self._generate_playlist_from_description(description)
@@ -336,6 +358,7 @@ You can also ask questions directly without commands:
 
 **Recommendations:**
 • `/recommend [song]` - Get 3-5 song recommendations based on a song
+• `/select_recommendation [indices]` - Select recommendations to add (e.g., "1,3,5" or "1-3")
 • `/generate [description]` - Generate a playlist from a description (e.g., "workout playlist with 10 songs")
 
 **Natural Language:**
@@ -640,16 +663,85 @@ Type '/help' to see all available commands!"""
         """
         song_info = song_info.strip()
         
+        # Remove quotes from song_info for matching
+        song_info_clean = song_info.replace('"', '').replace("'", "")
+        
         # Check if it's in "artist: title" format
         if ": " in song_info:
-            # Traditional format - check if exists in database
-            if not self._song_exists(song_info):
-                return f"Sorry, '{song_info}' is not available in our database. Please check the spelling and try again."
-            
-            song_key = song_info
+            # Traditional format - try multiple variations
+            if self._song_exists(song_info):
+                song_key = song_info
+            elif self._song_exists(song_info_clean):
+                song_key = song_info_clean
+            else:
+                # Try searching for similar matches
+                parts = song_info.split(": ", 1)
+                if len(parts) == 2:
+                    artist, title = parts
+                    artist_clean = artist.replace('"', '').replace("'", "").strip()
+                    title_clean = title.replace('"', '').replace("'", "").strip()
+                    
+                    # Try different combinations
+                    variations = [
+                        f"{artist_clean}: {title_clean}",
+                        f'"{artist_clean}": {title_clean}',
+                        f"{artist}: {title_clean}",
+                        f"{artist_clean}: {title}",
+                    ]
+                    
+                    # Also try with artist in quotes if it has spaces
+                    if " " in artist_clean and not artist_clean.startswith('"'):
+                        variations.append(f'"{artist_clean}": {title_clean}')
+                    
+                    song_key = None
+                    for variation in variations:
+                        if self._song_exists(variation):
+                            song_key = variation
+                            break
+                    
+                    if not song_key:
+                        # Last resort: search in database for fuzzy match (case-insensitive)
+                        conn = sqlite3.connect(self._db_path)
+                        cursor = conn.cursor()
+                        # Try exact match first (case-insensitive)
+                        cursor.execute('''
+                            SELECT song_key FROM songs 
+                            WHERE LOWER(TRIM(artist)) = LOWER(TRIM(?)) AND LOWER(TRIM(title)) = LOWER(TRIM(?))
+                            LIMIT 1
+                        ''', (artist_clean, title_clean))
+                        result = cursor.fetchone()
+                        
+                        # If still not found, try with artist in quotes (for artists with spaces)
+                        if not result and " " in artist_clean:
+                            cursor.execute('''
+                                SELECT song_key FROM songs 
+                                WHERE LOWER(TRIM(REPLACE(REPLACE(artist, '"', ''), "'", ''))) = LOWER(TRIM(?)) 
+                                AND LOWER(TRIM(title)) = LOWER(TRIM(?))
+                                LIMIT 1
+                            ''', (artist_clean, title_clean))
+                            result = cursor.fetchone()
+                        
+                        conn.close()
+                        if result:
+                            song_key = result[0]
+                        else:
+                            return f"Sorry, '{song_info}' is not available in our database. Please check the spelling and try again."
+                else:
+                    return f"Sorry, '{song_info}' is not available in our database. Please check the spelling and try again."
         else:
             # Title-only format - search for matches
-            matches = self._search_songs_by_title_in_db(song_info)
+            # Try with and without quotes, and with normalized version
+            matches = self._search_songs_by_title_in_db(song_info_clean)
+            if not matches:
+                # Try original search
+                matches = self._search_songs_by_title_in_db(song_info)
+            if not matches:
+                # Try searching for partial match (e.g., "Creepin" should find "Creepin'")
+                import re
+                # Remove common suffixes and search
+                base_name = re.sub(r'[^\w\s]', '', song_info_clean).strip()
+                if base_name:
+                    matches = self._search_songs_by_title_in_db(base_name)
             
             if not matches:
                 return f"Sorry, no songs found with title '{song_info}'. Try searching with '/search {song_info}' to see available options."
@@ -673,7 +765,10 @@ Type '/help' to see all available commands!"""
         
         # Add song to playlist
         current_playlist.songs.append(song_key)
-        return f"Added '{song_key}' to your '{current_playlist.name}' playlist!"
+        response = f"Added '{song_key}' to your '{current_playlist.name}' playlist!\n\n"
+        # Include playlist view so frontend updates
+        response += self._view_playlist()
+        return response
 
     def _remove_song(self, song_info: str) -> str:
         """Remove a song from the current playlist.
@@ -731,7 +826,10 @@ Type '/help' to see all available commands!"""
         song_count = len(current_playlist.songs)
         song_text = "song" if song_count == 1 else "songs"
         current_playlist.songs.clear()
-        return f"Cleared your '{current_playlist.name}' playlist! Removed {song_count} {song_text}."
+        response = f"Cleared your '{current_playlist.name}' playlist! Removed {song_count} {song_text}.\n\n"
+        # Include playlist view so frontend updates UI
+        response += self._view_playlist()
+        return response
 
     def _create_playlist(self, playlist_name: str) -> str:
         """Create a new playlist.
@@ -1859,7 +1957,12 @@ Type '/help' to see all available commands!"""
                     return f"Sorry, '{song_info}' is not available in our database."
                 song_key = song_info
             else:
-                matches = self._search_songs_by_title_in_db(song_info)
+                # R5.6: Normalize song name for better matching
+                normalized = self._normalize_song_name(song_info)
+                matches = self._search_songs_by_title_in_db(normalized)
+                if not matches:
+                    # Try original search
+                    matches = self._search_songs_by_title_in_db(song_info)
                 if not matches:
                     return f"Sorry, no songs found with title '{song_info}'."
                 song_key = matches[0]
@@ -1880,10 +1983,12 @@ Type '/help' to see all available commands!"""
         for i, (rec_song, reason) in enumerate(recommendations, 1):
             response += f"{i}. {rec_song}\n   💡 {reason}\n\n"
         
-        response += "\n**To add a song:**\n"
-        response += "• Use: /add [artist]: [title]\n"
+        response += "\n**To add songs:**\n"
+        response += "• Use: /select_recommendation 1,3,5 (by indices)\n"
+        response += "• Or: /select_recommendation 1-3 (range)\n"
         response += "• Or say: 'Add the first two songs'\n"
         response += "• Or say: 'Add all except the last one'\n"
+        response += "• Or say: 'Add all except the one by [artist]'\n"
         response += "• Or say: 'Add all recommendations'"
         
         return response
@@ -2045,7 +2150,11 @@ Respond ONLY with valid JSON:
         if len(songs) > 5:
             response += f"... and {len(songs) - 5} more songs\n"
         
-        response += f"\nUse '/view' to see the full playlist!"
+        response += f"\n"
+        # Include playlist list and view so frontend updates UI properly
+        response += self._list_playlists()
+        response += "\n\n"
+        response += self._view_playlist()
         
         return response
 
@@ -2149,8 +2258,91 @@ Respond ONLY with valid JSON:
                     return self._generate_playlist_from_description(description)
                 elif intent == 'question':
                     return self._answer_question(text)
-        except:
+        except Exception as e:
+            # Fallback to pattern matching if LLM fails
             pass
+        
+        # Fallback pattern matching for common natural language commands
+        text_lower = text.lower().strip()
+        
+        # Pattern matching for common commands
+        if 'recommend' in text_lower or 'suggest' in text_lower or 'recommendation' in text_lower:
+            # Extract song name if mentioned
+            song_match = None
+            if 'for' in text_lower or 'like' in text_lower or 'based on' in text_lower:
+                # Try to extract song name after keywords
+                import re
+                match = re.search(r'(?:for|like|based on)\s+(.+)', text_lower)
+                if match:
+                    song_match = match.group(1).strip()
+            return self._recommend_songs(song_match)
+        
+        if ('generate' in text_lower or 'create' in text_lower) and 'playlist' in text_lower:
+            # Extract description - extract the theme/description part
+            import re
+            # Pattern 1: "generate workout playlist" -> description = "workout"
+            # Pattern 2: "generate playlist with energetic songs" -> description = "energetic songs"
+            # Pattern 3: "workout playlist with energetic songs" -> combine both
+            
+            # Remove "generate" or "create" from start
+            text_clean = re.sub(r'^(?:generate|create)\s+', '', text_lower, flags=re.IGNORECASE)
+            
+            description_parts = []
+            
+            # Try to find theme before "playlist"
+            match_before = re.search(r'^(.+?)\s+playlist', text_clean, re.IGNORECASE)
+            if match_before:
+                theme_before = match_before.group(1).strip()
+                if len(theme_before) > 1:
+                    description_parts.append(theme_before)
+            
+            # Try to find description after "playlist"
+            match_after = re.search(r'playlist\s+(?:with|for|about|of)?\s*(.+)', text_clean, re.IGNORECASE)
+            if match_after:
+                theme_after = match_after.group(1).strip()
+                # Remove any trailing selection commands
+                theme_after = re.sub(r'\s+(?:add|select|choose).*$', '', theme_after, flags=re.IGNORECASE).strip()
+                if len(theme_after) > 1:
+                    description_parts.append(theme_after)
+            
+            # Combine parts
+            if description_parts:
+                description = ' '.join(description_parts)
+            else:
+                # Last resort: use everything except "playlist"
+                description = re.sub(r'\s*playlist.*$', '', text_clean, flags=re.IGNORECASE).strip()
+            
+            if description and len(description) > 2:
+                return self._generate_playlist_from_description(description)
+            
+            return "Please provide a description. Example: 'Generate a workout playlist with energetic songs'"
+        
+        if text_lower.startswith('add'):
+            # Handle "Add the first two songs" etc.
+            if 'first' in text_lower or 'last' in text_lower or 'all' in text_lower:
+                # This is a selection command
+                selection = text_lower.replace('add', '').replace('the', '').replace('songs', '').strip()
+                return self._handle_selection_add(selection)
+            # Extract song name
+            song_part = text_lower.replace('add', '').strip()
+            if song_part:
+                normalized = self._normalize_song_name(song_part)
+                return self._add_song(normalized)
+        
+        # R5.1: Handle "show me my playlist" / "view playlist"
+        if 'show' in text_lower or 'view' in text_lower or 'display' in text_lower:
+            if 'playlist' in text_lower:
+                return self._view_playlist()
+        
+        # R5.1: Handle "clear my playlist" / "clear playlist"
+        if 'clear' in text_lower and 'playlist' in text_lower:
+            return self._clear_playlist()
+        
+        # R5.4: Handle "How many songs are in my playlist?"
+        if 'how many' in text_lower and 'songs' in text_lower and 'playlist' in text_lower:
+            current_playlist = self._get_current_playlist()
+            count = len(current_playlist.songs)
+            return f"Your '{current_playlist.name}' playlist has {count} song(s)."
         
         return "I'm sorry, I don't understand. Type '/help' to see available commands."
 
@@ -2160,10 +2352,15 @@ Respond ONLY with valid JSON:
         songs = entities.get('songs', [])
         
         if songs:
-            # Add specific songs
+            # Add specific songs (R5.6: Handle complex song names)
             added = []
             for song in songs:
-                matches = self._search_songs_by_title_in_db(song)
+                # Normalize song name - remove special characters for matching
+                normalized_song = self._normalize_song_name(song)
+                matches = self._search_songs_by_title_in_db(normalized_song)
+                if not matches:
+                    # Try original search
+                    matches = self._search_songs_by_title_in_db(song)
                 if matches:
                     result = self._add_song(matches[0])
                     added.append(matches[0])
@@ -2268,6 +2465,23 @@ Respond ONLY with valid JSON:
                     songs_to_add = last_recs[num:]
                 else:
                     songs_to_add = last_recs[1:]
+            elif 'by' in selection_lower or 'artist' in selection_lower:
+                # R5.2: Handle "all except the one by [artist]"
+                import re
+                match = re.search(r'except.*(?:the|one|song).*by\s+([a-zA-Z0-9\s]+)', selection_lower)
+                if match:
+                    artist_name = match.group(1).strip()
+                    songs_to_add = [s for s in last_recs if artist_name.lower() not in s.lower()]
+                else:
+                    # Try to extract artist from "except [artist]"
+                    match = re.search(r'except\s+([a-zA-Z0-9\s]+)', selection_lower)
+                    if match:
+                        artist_name = match.group(1).strip()
+                        songs_to_add = [s for s in last_recs if artist_name.lower() not in s.lower()]
+                    else:
+                        songs_to_add = last_recs
+            else:
+                songs_to_add = last_recs
         
         elif 'all' in selection_lower:
             songs_to_add = last_recs
@@ -2282,7 +2496,10 @@ Respond ONLY with valid JSON:
                     added.append(song)
             
             if added:
-                return f"Added {len(added)} song(s) to your playlist: {', '.join([s.split(': ')[1] if ': ' in s else s for s in added[:3]])}{'...' if len(added) > 3 else ''}"
+                response = f"Added {len(added)} song(s) to your playlist: {', '.join([s.split(': ')[1] if ': ' in s else s for s in added[:3]])}{'...' if len(added) > 3 else ''}\n\n"
+                # Include playlist view so frontend updates
+                response += self._view_playlist()
+                return response
             else:
                 return "All selected songs are already in your playlist."
         
@@ -2315,6 +2532,108 @@ Respond ONLY with valid JSON:
         if not hasattr(self, '_last_recommendations'):
             self._last_recommendations = []
         return self._last_recommendations
+
+    def _normalize_song_name(self, song_name: str) -> str:
+        """R5.6: Normalize song name to handle complex names with special characters.
+        
+        Handles simplified forms like "'Creepin' (with The Weeknd & 21 Savage)' by Metro Boomin"
+        by removing parentheses content, quotes, and normalizing.
+        
+        Args:
+            song_name: Song name that may contain special characters
+            
+        Returns:
+            Normalized song name for better matching
+        """
+        import re
+        
+        # Remove content in parentheses (e.g., "(with The Weeknd & 21 Savage)")
+        normalized = re.sub(r'\([^)]*\)', '', song_name)
+        
+        # Remove quotes
+        normalized = normalized.replace("'", "").replace('"', '')
+        
+        # Remove "by [artist]" suffix if present
+        normalized = re.sub(r'\s+by\s+.*$', '', normalized, flags=re.IGNORECASE)
+        
+        # Remove trailing punctuation that might interfere with search
+        normalized = re.sub(r'[^\w\s]+$', '', normalized)  # Remove trailing punctuation
+        
+        # Remove extra whitespace
+        normalized = ' '.join(normalized.split())
+        
+        return normalized.strip()
+
+    def _select_recommendation(self, selection: str) -> str:
+        """R4.2: Select and add recommended songs by index.
+        
+        Args:
+            selection: Selection string (e.g., "1,3,5" or "1-3" or "1,2,3")
+            
+        Returns:
+            Response message
+        """
+        last_recs = self._get_last_recommendations()
+        
+        if not last_recs:
+            return "Please use /recommend first to see song suggestions, then specify which to add."
+        
+        selection = selection.strip()
+        indices = []
+        
+        # Parse different formats: "1,3,5", "1-3", "1,2,3"
+        import re
+        
+        # Remove any trailing text (e.g., "1,3,5th energetic songs" -> "1,3,5")
+        # Extract just the numbers part
+        selection_clean = re.sub(r'^(\d+(?:[,\s-]\d+)*).*$', r'\1', selection)
+        
+        # Handle range: "1-3"
+        if '-' in selection_clean:
+            match = re.match(r'(\d+)\s*-\s*(\d+)', selection_clean)
+            if match:
+                start = int(match.group(1))
+                end = int(match.group(2))
+                indices = list(range(start, end + 1))
+        # Handle comma-separated: "1,3,5"
+        elif ',' in selection_clean:
+            # Extract numbers even with text like "1,3,5th"
+            parts = selection_clean.split(',')
+            for part in parts:
+                # Extract first number from each part
+                num_match = re.search(r'(\d+)', part.strip())
+                if num_match:
+                    indices.append(int(num_match.group(1)))
+        # Handle single number (may have text after)
+        else:
+            num_match = re.search(r'(\d+)', selection_clean)
+            if num_match:
+                indices = [int(num_match.group(1))]
+        
+        # Validate indices (1-based)
+        valid_indices = [i for i in indices if 1 <= i <= len(last_recs)]
+        
+        if not valid_indices:
+            return f"Invalid selection. Please use numbers between 1 and {len(last_recs)}. Example: /select_recommendation 1,3,5"
+        
+        # Add selected songs
+        current_playlist = self._get_current_playlist()
+        added = []
+        for idx in valid_indices:
+            song = last_recs[idx - 1]  # Convert to 0-based
+            if song not in current_playlist.songs:
+                current_playlist.songs.append(song)
+                added.append(song)
+        
+        if added:
+            song_names = [s.split(': ')[1] if ': ' in s else s for s in added[:3]]
+            response = f"✅ Added {len(added)} song(s) to your playlist: {', '.join(song_names)}{'...' if len(added) > 3 else ''}\n\n"
+            # Also send playlist view so frontend updates
+            playlist_view = self._view_playlist()
+            response += playlist_view
+            return response
+        else:
+            return "All selected songs are already in your playlist."
 
 
 class MusicCRSPlatform(FlaskSocketPlatform):
