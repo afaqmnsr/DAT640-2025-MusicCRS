@@ -38,9 +38,6 @@ export default function useSocketConnection(
     });
 
     newSocket.on("message", (response: AgentMessage) => {
-      if (response.info) {
-        console.log(response.info);
-      }
       if (response.message) {
         onMessageRef.current && onMessageRef.current(response.message);
       }
@@ -61,11 +58,22 @@ export default function useSocketConnection(
   }, [url, path]);
 
   const startConversation = () => {
-    socket?.emit("start_conversation", {});
+    if (socket && socket.connected) {
+      socket.emit("start_conversation", {});
+    } else {
+      // If socket exists but not connected, wait for connection
+      if (socket) {
+        socket.once("connect", () => {
+          socket.emit("start_conversation", {});
+        });
+      }
+    }
   };
 
   const sendMessage = (message: UserMessage) => {
-    socket?.emit("message", message);
+    if (socket && socket.connected) {
+      socket.emit("message", message);
+    }
   };
 
   const quickReply = (message: UserMessage) => {

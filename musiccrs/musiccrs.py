@@ -270,13 +270,22 @@ class MusicCRS(Agent):
                 # Try natural language processing
                 response = self._process_natural_language(utterance.text)
 
-        self._dialogue_connector.register_agent_utterance(
-            AnnotatedUtterance(
-                response,
-                participant=DialogueParticipant.AGENT,
-                dialogue_acts=dialogue_acts,
+        # Handle dialogue connector - it might be None if agent wasn't created through platform
+        if self._dialogue_connector is not None:
+            self._dialogue_connector.register_agent_utterance(
+                AnnotatedUtterance(
+                    response,
+                    participant=DialogueParticipant.AGENT,
+                    dialogue_acts=dialogue_acts,
+                )
             )
-        )
+        else:
+            # If dialogue connector is None, we need to manually send the response
+            # This happens when agents are created outside the normal DialogueKit flow
+            # Store response for manual sending
+            if not hasattr(self, '_pending_response'):
+                self._pending_response = None
+            self._pending_response = response
 
     # --- Response handlers ---
 
@@ -425,10 +434,10 @@ Type '/help' to see all available commands!"""
     def _populate_database(self, cursor) -> None:
         """Populate the database with songs from Spotify Million Playlist Dataset."""
         # Path to the downloaded dataset - check multiple locations
+
+        dataset_path = r"C:\Users\afaqm\.cache\kagglehub\datasets\himanshuwagh\spotify-million\versions\1\data"
         possible_paths = [
-            "/Users/daud/Downloads/spotify_million_playlist_dataset/data",
-            os.path.expanduser("~/.cache/kagglehub/datasets/himanshuwagh/spotify-million/versions/1/data"),
-            "./spotify_data",
+            dataset_path,
         ]
         
         dataset_path = None
@@ -2315,15 +2324,93 @@ class MusicCRSPlatform(FlaskSocketPlatform):
         super().__init__(agent_class)
         self._agent_instance = None
         
+        # Hook into message handling - DialogueKit's FlaskSocketPlatform should handle this
+        # But we'll add a wrapper to ensure messages get processed
+        # The parent class registers handlers after __init__, so we'll override after super().__init__
+        
+    def _hook_message_handler(self):
+        """Hook into message handling after parent initialization."""
+        # Get the socketio instance
+        # Wrap the existing message handler if it exists
+        pass  # We'll handle this in start() after parent is fully initialized
+        
     def _on_connect(self, sid):
         """Override to send welcome message on connect."""
         super()._on_connect(sid)
         # Automatically send welcome message
-        if sid in self._agents:
-            self._agents[sid].welcome()
+        # Get agent after parent has initialized it
+        agent = None
+        if hasattr(self, '_agents') and sid in self._agents:
+            agent = self._agents[sid]
+        elif hasattr(self, 'get_agent'):
+            agent = self.get_agent(sid)
+        
+        if agent:
+            agent.welcome()
         
     def start(self):
         """Start the platform with Spotify auth routes."""
+        # Add message handler wrapper before starting
+        @self.socketio.on('message')
+        def handle_message_wrapper(data):
+            from flask import request
+            sid = request.sid
+            
+            # Extract message text
+            message_text = data.get('message', '') if isinstance(data, dict) else str(data)
+            
+            # Try to get agent for this session
+            # DialogueKit stores agents internally, but we need to access them properly
+            # Let's create a simple agent storage or use get_new_agent
+            agent = None
+            
+            # Initialize agent storage if needed
+            if not hasattr(self, '_session_agents'):
+                self._session_agents = {}
+            
+            # Check if we have an agent for this session
+            if sid in self._session_agents:
+                agent = self._session_agents[sid]
+            else:
+                # Create a new agent for this session using get_new_agent
+                try:
+                    agent = self.get_new_agent()
+                    self._session_agents[sid] = agent
+                except Exception as e:
+                    # Fallback: use single shared agent instance
+                    if hasattr(self, '_agent_instance') and self._agent_instance:
+                        agent = self._agent_instance
+                    else:
+                        # Create a single shared instance
+                        agent = self._agent_class()
+                        self._agent_instance = agent
+            
+            # Process the message if we have an agent
+            if agent and message_text:
+                from dialoguekit.core.utterance import Utterance
+                utterance = Utterance(message_text, participant=DialogueParticipant.USER)
+                
+                # Clear any pending response
+                if hasattr(agent, '_pending_response'):
+                    agent._pending_response = None
+                
+                # Process the message
+                agent.receive_utterance(utterance)
+                
+                # If agent has a pending response (dialogue_connector was None), send it manually
+                if hasattr(agent, '_pending_response') and agent._pending_response:
+                    response_text = agent._pending_response
+                    from flask_socketio import emit
+                    emit('message', {
+                        'recipient': sid,
+                        'message': {
+                            'text': response_text,
+                            'dialogue_acts': []
+                        },
+                        'info': None
+                    })
+                    agent._pending_response = None
+        
         # Get the Flask app from the parent class
         app = self.app
         
@@ -2414,7 +2501,7 @@ class MusicCRSPlatform(FlaskSocketPlatform):
             return response
         
         # Start the platform
-        self.socketio.run(self.app, host='127.0.0.1', port=5001, allow_unsafe_werkzeug=True)
+        self.socketio.run(self.app, host='127.0.0.1', port=5000, allow_unsafe_werkzeug=True)
 
 
 if __name__ == "__main__":

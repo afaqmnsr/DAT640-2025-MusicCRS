@@ -12,7 +12,14 @@ import ollama
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv('config.env')
+# Find config.env relative to this file's location (project root)
+file_dir = os.path.dirname(os.path.abspath(__file__))
+config_path = os.path.join(file_dir, 'config.env')
+if os.path.exists(config_path):
+    load_dotenv(config_path)
+else:
+    # Fallback: try current working directory
+    load_dotenv('config.env')
 
 OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'https://ollama.ux.uis.no')
 OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.3:70b')

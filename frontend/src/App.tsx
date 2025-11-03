@@ -33,7 +33,7 @@ const lightTheme = createTheme({
 export default function App() {
   const { config } = useContext(ConfigContext);
   const { user } = useContext(UserContext);
-  const { startConversation, sendMessage, onMessage } = useSocket();
+  const { startConversation, sendMessage, onMessage, isConnected } = useSocket();
   const [playlist, setPlaylist] = useState<string[]>([]);
   const [availableSongs, setAvailableSongs] = useState<string[]>([]);
   const [playlistList, setPlaylistList] = useState<string[]>(['My Playlist']);
@@ -51,6 +51,13 @@ export default function App() {
     
     // Check for Spotify authentication
     checkSpotifyAuth();
+  }, [startConversation]);
+  
+  // Send /help command once connected
+  useEffect(() => {
+    if (!isConnected) {
+      return;
+    }
     
     // Load available songs automatically to enable search functionality
     const timer = setTimeout(() => {
@@ -60,7 +67,6 @@ export default function App() {
     // Fallback: if no songs loaded after 5 seconds, try again
     const fallbackTimer = setTimeout(() => {
       if (availableSongs.length === 0) {
-        console.log('No songs loaded, retrying...');
         sendMessage({ message: '/help' });
       }
     }, 5000);
@@ -69,7 +75,7 @@ export default function App() {
       clearTimeout(timer);
       clearTimeout(fallbackTimer);
     };
-  }, [startConversation, sendMessage, availableSongs.length]);
+  }, [isConnected, sendMessage, availableSongs.length]);
 
   // Check Spotify authentication status
   const checkSpotifyAuth = async () => {
@@ -78,27 +84,20 @@ export default function App() {
       const data = await response.json();
       
       if (data.authenticated) {
-        console.log('✅ Spotify authenticated:', data.token);
         // Get the full token
         const tokenResponse = await fetch('http://localhost:5000/auth/token');
         const tokenData = await tokenResponse.json();
         setSpotifyAccessToken(tokenData.access_token);
-      } else {
-        console.log('⚠️ Spotify authentication required');
-        console.log('🔗 Visit: http://localhost:5000/auth/login');
       }
     } catch (error) {
-      console.log('⚠️ Spotify auth server not running:', error);
-      console.log('🚀 Start MusicCRS server to enable authentication');
+      // Spotify auth server may not be running
     }
   };
 
-  // Handle all socket messages in App component
-  useEffect(() => {
-    onMessage((message: ChatMessage) => {
-      console.log('App received message:', message.text); // Debug log
-      
-      // Add all messages to chat history for display (mark as agent messages)
+      // Handle all socket messages in App component
+      useEffect(() => {
+        onMessage((message: ChatMessage) => {
+          // Add all messages to chat history for display (mark as agent messages)
       const agentMessage: ChatMessage = {
         ...message,
         participant: 'agent',
@@ -118,27 +117,35 @@ export default function App() {
             inSongsSection = true;
             continue;
           }
-          if (inSongsSection && line.startsWith("• ")) {
-            const song = line.replace("• ", "").trim();
+          // Handle different bullet characters: • (U+2022), - (dash), * (asterisk)
+          if (inSongsSection && (line.startsWith("• ") || line.startsWith("- ") || line.startsWith("* "))) {
+            // Remove bullet and trim
+            const song = line.replace(/^[•\-\*]\s*/, "").trim();
             if (song) {
               songs.push(song);
             }
           } else if (inSongsSection && line.includes("... and")) {
             // Stop parsing when we hit the "... and X more songs" line
             break;
+          } else if (inSongsSection && line.trim() === "") {
+            // Empty line - might be end of section, but continue in case there are more songs
+            continue;
+          } else if (inSongsSection && line.trim() !== "" && !line.match(/^[•\-\*]\s/)) {
+            // Hit a non-song line while in songs section - might be end
+            // But check if it's a markdown header or other section marker
+            if (line.startsWith("**") || line.startsWith("#")) {
+              break;
+            }
           }
         }
         
         if (songs.length > 0) {
-          console.log('Loaded', songs.length, 'songs from database'); // Debug log
           setAvailableSongs(songs);
         }
       }
       
       // Handle cover generation messages
       if (message.text && message.text.includes('Generated cover image for playlist')) {
-        console.log('App received cover generation message');
-        
         // Extract playlist name from the message
         const playlistMatch = message.text.match(/Generated cover image for playlist '(.+?)'/);
         const playlistName = playlistMatch ? playlistMatch[1] : currentPlaylist;
@@ -155,26 +162,20 @@ export default function App() {
         }
         
         if (imageData) {
-          console.log('App found image data, setting generated cover image for playlist:', playlistName);
           setGeneratedCoverImages(prev => ({
             ...prev,
             [playlistName]: imageData as string
           }));
-        } else {
-          console.log('App: No image data found in cover message');
         }
         return; // Don't process as playlist update
       }
       
       // Handle Spotify track info responses
       if (message.text && message.text.includes("SPOTIFY_TRACK_INFO:")) {
-        console.log('Spotify track info received:', message.text); // Debug log
-        
         try {
           const jsonMatch = message.text.match(/SPOTIFY_TRACK_INFO:\s*(.+)/);
           if (jsonMatch) {
             const trackData = JSON.parse(jsonMatch[1]);
-            console.log('Parsed track data:', trackData); // Debug log
             setCurrentTrackInfo(trackData);
           }
         } catch (error) {
@@ -187,8 +188,6 @@ export default function App() {
       // Handle search results - extract songs and update search results
       if (message.text && (message.text.includes("Found") && message.text.includes("songs matching") || 
           message.text.includes("No songs found matching"))) {
-        console.log('Search results received, processing...'); // Debug log
-        
         // Extract songs from search results
         const lines = message.text.split('\n');
         const songs: string[] = [];
