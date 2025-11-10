@@ -146,12 +146,25 @@ class MusicCRS(Agent):
 
     def goodbye(self) -> None:
         """Quits the conversation."""
+        goodbye_text = "It was nice talking to you. Bye"
         utterance = AnnotatedUtterance(
-            "It was nice talking to you. Bye",
+            goodbye_text,
             dialogue_acts=[DialogueAct(intent=self.stop_intent)],
             participant=DialogueParticipant.AGENT,
         )
-        self._dialogue_connector.register_agent_utterance(utterance)
+        
+        # Handle dialogue connector - it might be None if agent wasn't created through platform
+        if self._dialogue_connector is not None:
+            self._dialogue_connector.register_agent_utterance(utterance)
+        else:
+            # If dialogue connector is None, store response for manual sending
+            if not hasattr(self, '_pending_response'):
+                self._pending_response = None
+            self._pending_response = goodbye_text
+            # Also mark that this is a goodbye/exit message
+            if not hasattr(self, '_pending_dialogue_acts'):
+                self._pending_dialogue_acts = []
+            self._pending_dialogue_acts = [{'intent': 'EXIT'}]
 
     def receive_utterance(self, utterance: Utterance) -> None:
         """Gets called each time there is a new user utterance.
@@ -191,6 +204,9 @@ class MusicCRS(Agent):
             ]
         elif utterance.text == "/help":
             response = self._help()
+        elif utterance.text.lower().strip() in ["hello", "hello!", "hi", "hi!", "greetings"]:
+            # Handle greeting from simulator
+            response = "Hello! I'm MusicCRS, your music recommendation assistant. I can help you create and manage playlists. Type '/help' to see what I can do!"
         elif utterance.text.startswith("/add "):
             song_info = utterance.text[5:]  # Remove "/add "
             # R5.6: Normalize song name for better matching of complex names
@@ -2654,21 +2670,64 @@ class MusicCRSPlatform(FlaskSocketPlatform):
         pass  # We'll handle this in start() after parent is fully initialized
         
     def _on_connect(self, sid):
-        """Override to send welcome message on connect."""
-        super()._on_connect(sid)
+        """Handle client connection and send welcome message."""
         # Automatically send welcome message
-        # Get agent after parent has initialized it
+        # Get or create agent for this session
         agent = None
+        
+        # Initialize session agents storage if needed
+        if not hasattr(self, '_session_agents'):
+            self._session_agents = {}
+        
+        # Try to get agent from parent class first
         if hasattr(self, '_agents') and sid in self._agents:
             agent = self._agents[sid]
         elif hasattr(self, 'get_agent'):
-            agent = self.get_agent(sid)
+            try:
+                agent = self.get_agent(sid)
+            except:
+                pass
         
+        # If still no agent, create one
+        if not agent:
+            try:
+                agent = self.get_new_agent()
+                self._session_agents[sid] = agent
+            except Exception as e:
+                # Fallback: use shared instance
+                if not hasattr(self, '_agent_instance') or not self._agent_instance:
+                    self._agent_instance = self._agent_class()
+                agent = self._agent_instance
+        
+        # Send welcome message directly via SocketIO to ensure it's sent
+        # DialogueKit's register_agent_utterance should handle this, but we'll also send directly
+        welcome_text = "Hello! I'm MusicCRS, your music recommendation assistant. I can help you create and manage playlists. Type '/help' to see what I can do!"
+        
+        # Send directly via SocketIO (this is what the simulator expects)
+        self.socketio.emit('message', {
+            'message': {
+                'text': welcome_text,
+                'dialogue_acts': []
+            }
+        }, room=sid)
+        
+        # Also try the agent's welcome method (for DialogueKit integration)
         if agent:
-            agent.welcome()
+            try:
+                agent.welcome()
+            except Exception as e:
+                # Welcome method might fail if dialogue_connector isn't ready, but we already sent the message above
+                pass
         
     def start(self):
         """Start the platform with Spotify auth routes."""
+        # Register connect handler to send welcome message
+        @self.socketio.on('connect')
+        def handle_connect(auth):
+            from flask import request
+            sid = request.sid
+            self._on_connect(sid)
+        
         # Add message handler wrapper before starting
         @self.socketio.on('message')
         def handle_message_wrapper(data):
@@ -2719,16 +2778,23 @@ class MusicCRSPlatform(FlaskSocketPlatform):
                 # If agent has a pending response (dialogue_connector was None), send it manually
                 if hasattr(agent, '_pending_response') and agent._pending_response:
                     response_text = agent._pending_response
+                    # Get dialogue acts if available (for EXIT intent from goodbye)
+                    dialogue_acts = []
+                    if hasattr(agent, '_pending_dialogue_acts') and agent._pending_dialogue_acts:
+                        dialogue_acts = agent._pending_dialogue_acts
+                    
                     from flask_socketio import emit
                     emit('message', {
                         'recipient': sid,
                         'message': {
                             'text': response_text,
-                            'dialogue_acts': []
+                            'dialogue_acts': dialogue_acts
                         },
                         'info': None
                     })
                     agent._pending_response = None
+                    if hasattr(agent, '_pending_dialogue_acts'):
+                        agent._pending_dialogue_acts = []
         
         # Get the Flask app from the parent class
         app = self.app
