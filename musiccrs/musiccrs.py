@@ -33,6 +33,7 @@ load_dotenv(config_path)
 OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'https://ollama.ux.uis.no')
 OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.3:70b')
 OLLAMA_API_KEY = os.getenv('OLLAMA_API_KEY')
+SPOTIFY_DATASET_PATH = os.getenv('SPOTIFY_DATASET_PATH')
 
 # Spotify API Configuration
 SPOTIFY_CLIENT_ID = os.getenv('SPOTIFY_CLIENT_ID')
@@ -90,7 +91,7 @@ class MusicCRS(Agent):
         self._default_playlist_name = "My Playlist"  # Default name for first playlist
         self._help_song_limit = 100000  # Show all songs (effectively unlimited)
         self._db_path = "music_database.db"
-        self._init_database()  # Initialize SQLite database
+        self._db_initialized = False  # Track if database is initialized
         
         # Spotify authentication
         self._spotify_access_token = SPOTIFY_ACCESS_TOKEN  # Use token from env if available
@@ -410,6 +411,13 @@ I can help you:
 
 Type '/help' to see all available commands!"""
 
+    def _ensure_database(self) -> None:
+        """Ensure database is initialized (lazy initialization)."""
+        if self._db_initialized:
+            return
+        self._init_database()
+        self._db_initialized = True
+    
     def _init_database(self) -> None:
         """Initialize SQLite database and load Spotify Million Playlist Dataset."""
         # Create database connection
@@ -473,11 +481,15 @@ Type '/help' to see all available commands!"""
     def _populate_database(self, cursor) -> None:
         """Populate the database with songs from Spotify Million Playlist Dataset."""
         # Path to the downloaded dataset - check multiple locations
-
-        dataset_path = r"C:\Users\afaqm\.cache\kagglehub\datasets\himanshuwagh\spotify-million\versions\1\data"
-        possible_paths = [
-            dataset_path,
-        ]
+        possible_paths = []
+        if SPOTIFY_DATASET_PATH:
+            possible_paths.append(SPOTIFY_DATASET_PATH)
+        
+        possible_paths.extend([
+            os.path.expanduser("~/spotify_dataset/data"),
+            os.path.expanduser("~/.cache/kagglehub/datasets/himanshuwagh/spotify-million/versions/1/data"),
+            "/tmp/spotify_dataset/data",
+        ])
         
         dataset_path = None
         for path in possible_paths:
@@ -556,6 +568,7 @@ Type '/help' to see all available commands!"""
     
     def _song_exists(self, song_key: str) -> bool:
         """Check if a song exists in the database."""
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         cursor.execute('SELECT 1 FROM songs WHERE song_key = ?', (song_key,))
@@ -565,6 +578,7 @@ Type '/help' to see all available commands!"""
     
     def _search_songs_in_db(self, query: str) -> List[str]:
         """Search for songs in the database by artist or title."""
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         
@@ -587,6 +601,7 @@ Type '/help' to see all available commands!"""
     
     def _search_songs_by_title_in_db(self, title: str) -> List[str]:
         """Search for songs by title only in the database with intelligent ranking."""
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         
@@ -652,6 +667,7 @@ Type '/help' to see all available commands!"""
     
     def _get_song_count(self) -> int:
         """Get total number of songs in database."""
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM songs')
@@ -661,6 +677,7 @@ Type '/help' to see all available commands!"""
     
     def _get_sample_songs(self, limit: int = 100) -> List[str]:
         """Get a sample of songs from the database for help display."""
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         cursor.execute('SELECT song_key FROM songs ORDER BY RANDOM() LIMIT ?', (limit,))
@@ -1166,6 +1183,7 @@ Type '/help' to see all available commands!"""
 
     def _get_artist_song_count(self, artist_name: str) -> int:
         """Get the number of songs by a specific artist."""
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM songs WHERE LOWER(artist) LIKE ?', (f"%{artist_name.lower()}%",))
@@ -1175,6 +1193,7 @@ Type '/help' to see all available commands!"""
 
     def _get_song_duration(self, song_name: str) -> Optional[tuple]:
         """Get duration information for a song."""
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         cursor.execute('''
@@ -1194,6 +1213,7 @@ Type '/help' to see all available commands!"""
 
     def _get_song_album(self, song_name: str) -> Optional[tuple]:
         """Get album information for a song."""
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         cursor.execute('''
@@ -1213,6 +1233,7 @@ Type '/help' to see all available commands!"""
 
     def _get_top_artists(self, limit: int = 10) -> List[tuple]:
         """Get top artists by song count."""
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         cursor.execute('''
@@ -1229,6 +1250,7 @@ Type '/help' to see all available commands!"""
 
     def _get_songs_by_artist(self, artist_name: str, limit: int = 10) -> List[str]:
         """Get songs by a specific artist."""
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         cursor.execute('''
@@ -1324,6 +1346,7 @@ Type '/help' to see all available commands!"""
 
     def _get_artists_in_compilation(self, compilation_name: str) -> List[tuple]:
         """Get artists appearing most often in compilation albums matching the name."""
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         
@@ -1344,6 +1367,7 @@ Type '/help' to see all available commands!"""
 
     def _get_compilations_with_artist(self, artist_name: str) -> List[tuple]:
         """Get compilation albums containing a specific artist."""
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         
@@ -1368,6 +1392,7 @@ Type '/help' to see all available commands!"""
 
     def _get_compilation_song_count(self, compilation_name: str) -> int:
         """Get total number of songs in compilation albums matching the name."""
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         
@@ -1634,6 +1659,7 @@ Type '/help' to see all available commands!"""
 
     def _get_song_info_from_db(self, song_key: str) -> Optional[tuple]:
         """Get detailed song information from database including Spotify track ID."""
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         
@@ -2015,6 +2041,7 @@ Type '/help' to see all available commands!"""
         Returns:
             List of (song_key, reason) tuples
         """
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         
@@ -2176,6 +2203,7 @@ Respond ONLY with valid JSON:
 
     def _search_songs_by_theme(self, theme: str, count: int) -> List[str]:
         """Search for songs matching a theme/mood."""
+        self._ensure_database()
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         
@@ -2652,243 +2680,14 @@ Respond ONLY with valid JSON:
             return "All selected songs are already in your playlist."
 
 
-class MusicCRSPlatform(FlaskSocketPlatform):
-    """Custom platform that includes Spotify authentication routes."""
-    
-    def __init__(self, agent_class):
-        super().__init__(agent_class)
-        self._agent_instance = None
-        
-        # Hook into message handling - DialogueKit's FlaskSocketPlatform should handle this
-        # But we'll add a wrapper to ensure messages get processed
-        # The parent class registers handlers after __init__, so we'll override after super().__init__
-        
-    def _hook_message_handler(self):
-        """Hook into message handling after parent initialization."""
-        # Get the socketio instance
-        # Wrap the existing message handler if it exists
-        pass  # We'll handle this in start() after parent is fully initialized
-        
-    def _on_connect(self, sid):
-        """Handle client connection and send welcome message."""
-        # Automatically send welcome message
-        # Get or create agent for this session
-        agent = None
-        
-        # Initialize session agents storage if needed
-        if not hasattr(self, '_session_agents'):
-            self._session_agents = {}
-        
-        # Try to get agent from parent class first
-        if hasattr(self, '_agents') and sid in self._agents:
-            agent = self._agents[sid]
-        elif hasattr(self, 'get_agent'):
-            try:
-                agent = self.get_agent(sid)
-            except:
-                pass
-        
-        # If still no agent, create one
-        if not agent:
-            try:
-                agent = self.get_new_agent()
-                self._session_agents[sid] = agent
-            except Exception as e:
-                # Fallback: use shared instance
-                if not hasattr(self, '_agent_instance') or not self._agent_instance:
-                    self._agent_instance = self._agent_class()
-                agent = self._agent_instance
-        
-        # Send welcome message directly via SocketIO to ensure it's sent
-        # DialogueKit's register_agent_utterance should handle this, but we'll also send directly
-        welcome_text = "Hello! I'm MusicCRS, your music recommendation assistant. I can help you create and manage playlists. Type '/help' to see what I can do!"
-        
-        # Send directly via SocketIO (this is what the simulator expects)
-        self.socketio.emit('message', {
-            'message': {
-                'text': welcome_text,
-                'dialogue_acts': []
-            }
-        }, room=sid)
-        
-        # Also try the agent's welcome method (for DialogueKit integration)
-        if agent:
-            try:
-                agent.welcome()
-            except Exception as e:
-                # Welcome method might fail if dialogue_connector isn't ready, but we already sent the message above
-                pass
-        
-    def start(self):
-        """Start the platform with Spotify auth routes."""
-        # Register connect handler to send welcome message
-        @self.socketio.on('connect')
-        def handle_connect(auth):
-            from flask import request
-            sid = request.sid
-            self._on_connect(sid)
-        
-        # Add message handler wrapper before starting
-        @self.socketio.on('message')
-        def handle_message_wrapper(data):
-            from flask import request
-            sid = request.sid
-            
-            # Extract message text
-            message_text = data.get('message', '') if isinstance(data, dict) else str(data)
-            
-            # Try to get agent for this session
-            # DialogueKit stores agents internally, but we need to access them properly
-            # Let's create a simple agent storage or use get_new_agent
-            agent = None
-            
-            # Initialize agent storage if needed
-            if not hasattr(self, '_session_agents'):
-                self._session_agents = {}
-            
-            # Check if we have an agent for this session
-            if sid in self._session_agents:
-                agent = self._session_agents[sid]
-            else:
-                # Create a new agent for this session using get_new_agent
-                try:
-                    agent = self.get_new_agent()
-                    self._session_agents[sid] = agent
-                except Exception as e:
-                    # Fallback: use single shared agent instance
-                    if hasattr(self, '_agent_instance') and self._agent_instance:
-                        agent = self._agent_instance
-                    else:
-                        # Create a single shared instance
-                        agent = self._agent_class()
-                        self._agent_instance = agent
-            
-            # Process the message if we have an agent
-            if agent and message_text:
-                from dialoguekit.core.utterance import Utterance
-                utterance = Utterance(message_text, participant=DialogueParticipant.USER)
-                
-                # Clear any pending response
-                if hasattr(agent, '_pending_response'):
-                    agent._pending_response = None
-                
-                # Process the message
-                agent.receive_utterance(utterance)
-                
-                # If agent has a pending response (dialogue_connector was None), send it manually
-                if hasattr(agent, '_pending_response') and agent._pending_response:
-                    response_text = agent._pending_response
-                    # Get dialogue acts if available (for EXIT intent from goodbye)
-                    dialogue_acts = []
-                    if hasattr(agent, '_pending_dialogue_acts') and agent._pending_dialogue_acts:
-                        dialogue_acts = agent._pending_dialogue_acts
-                    
-                    from flask_socketio import emit
-                    emit('message', {
-                        'recipient': sid,
-                        'message': {
-                            'text': response_text,
-                            'dialogue_acts': dialogue_acts
-                        },
-                        'info': None
-                    })
-                    agent._pending_response = None
-                    if hasattr(agent, '_pending_dialogue_acts'):
-                        agent._pending_dialogue_acts = []
-        
-        # Get the Flask app from the parent class
-        app = self.app
-        
-        # Add Spotify authentication routes
-        @app.route('/auth/login')
-        def spotify_login():
-            """Initiate Spotify OAuth flow."""
-            if not SPOTIFY_CLIENT_ID:
-                return "Spotify Client ID not configured", 400
-            
-            # Generate random state for security
-            state = secrets.token_urlsafe(32)
-            
-            # Spotify authorization parameters
-            params = {
-                'response_type': 'code',
-                'client_id': SPOTIFY_CLIENT_ID,
-                'scope': 'streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state',
-                'redirect_uri': SPOTIFY_REDIRECT_URI,
-                'state': state
-            }
-            
-            # Build authorization URL
-            auth_url = 'https://accounts.spotify.com/authorize?' + '&'.join([f'{k}={v}' for k, v in params.items()])
-            return redirect(auth_url)
-        
-        @app.route('/auth/callback')
-        def spotify_callback():
-            """Handle Spotify OAuth callback."""
-            code = request.args.get('code')
-            error = request.args.get('error')
-            
-            if error:
-                return f"Spotify authentication error: {error}", 400
-            
-            if not code:
-                return "No authorization code received", 400
-            
-            try:
-                # Get the agent instance to handle the callback
-                if not self._agent_instance:
-                    self._agent_instance = self._agent_class()
-                
-                token_data = self._agent_instance._spotify_auth_callback(code)
-                return f"✅ Spotify authentication successful! Token: {token_data['access_token'][:20]}..."
-                
-            except Exception as e:
-                return f"Token exchange failed: {str(e)}", 500
-        
-        @app.route('/auth/token')
-        def get_token():
-            """API endpoint to get current access token."""
-            if not self._agent_instance:
-                self._agent_instance = self._agent_class()
-            
-            token = self._agent_instance._get_spotify_token()
-            if token:
-                response = jsonify({'access_token': token})
-            else:
-                response = jsonify({'error': 'No access token available'})
-                response.status_code = 401
-            
-            response.headers.add('Access-Control-Allow-Origin', '*')
-            response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-            response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-            return response
-        
-        @app.route('/auth/status', methods=['GET', 'OPTIONS'])
-        def auth_status():
-            """Check authentication status."""
-            if request.method == 'OPTIONS':
-                response = jsonify({})
-                response.headers.add('Access-Control-Allow-Origin', '*')
-                response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-                response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-                return response
-            
-            # Check if token exists without creating agent
-            token = SPOTIFY_ACCESS_TOKEN
-            if token:
-                response = jsonify({'authenticated': True, 'token': token[:20] + '...'})
-            else:
-                response = jsonify({'authenticated': False, 'message': 'No token available. Visit /auth/login to authenticate.'})
-            
-            response.headers.add('Access-Control-Allow-Origin', '*')
-            response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-            response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-            return response
-        
-        # Start the platform
-        self.socketio.run(self.app, host='127.0.0.1', port=5000, allow_unsafe_werkzeug=True)
-
-
 if __name__ == "__main__":
-    platform = MusicCRSPlatform(MusicCRS)
+    platform = FlaskSocketPlatform(MusicCRS)
+    
+    # Monkey patch the socketio.run to add allow_unsafe_werkzeug
+    original_run = platform.socketio.run
+    def patched_run(app, **kwargs):
+        kwargs['allow_unsafe_werkzeug'] = True
+        return original_run(app, **kwargs)
+    platform.socketio.run = patched_run
+    
     platform.start()
