@@ -265,12 +265,18 @@ class MusicCRS(Agent):
                 response += "• '/select_recommendation 1,3,5'\n"
                 response += "• 'Add all recommendations'"
             else:
-                # Extract song info, ignoring any trailing selection commands
+                # Extract song info, ignoring any trailing selection commands and descriptive text
                 import re
-                # Remove common selection patterns at the end
+                # Remove common selection patterns and descriptive text like "for my playlist"
                 song_info = re.sub(r'\s+(?:add|select|choose).*$', '', recommend_part, flags=re.IGNORECASE)
+                song_info = re.sub(r'\s+(?:for|to|and|my|the|a|an|playlist|workout).*$', '', song_info, flags=re.IGNORECASE)
                 song_info = song_info.strip()
-                response = self._recommend_songs(song_info if song_info else None)
+                
+                # If no valid song info after cleanup, use current playlist
+                if not song_info or len(song_info.split()) > 5:
+                    response = self._recommend_songs(None)
+                else:
+                    response = self._recommend_songs(song_info)
         elif utterance.text.startswith("/select_recommendation "):
             # R4.2: Select recommendations by index
             selection = utterance.text[23:].strip()
@@ -297,7 +303,14 @@ class MusicCRS(Agent):
                 "compilation",
                 "best of",
                 "how many songs are in the database",
-                "what songs does"
+                "what songs does",
+                "what's the name",
+                "what is the name",
+                "which artist",
+                "what artist",
+                "just added",
+                "you just added",
+                "you added"
             ]
             
             is_question = any(pattern in utterance_lower for pattern in question_patterns)
@@ -308,6 +321,9 @@ class MusicCRS(Agent):
             else:
                 # Try natural language processing
                 response = self._process_natural_language(utterance.text)
+                # If response is None, it means goodbye was triggered
+                if response is None:
+                    return
 
         # Handle dialogue connector - it might be None if agent wasn't created through platform
         if self._dialogue_connector is not None:
@@ -736,7 +752,7 @@ Type '/help' to see all available commands!"""
                         # Last resort: search in database for fuzzy match (case-insensitive)
                         conn = sqlite3.connect(self._db_path)
                         cursor = conn.cursor()
-                        # Try exact match first (case-insensitive)
+                        # Try exact match first (case-insensitive) with EXACT artist match priority
                         cursor.execute('''
                             SELECT song_key FROM songs 
                             WHERE LOWER(TRIM(artist)) = LOWER(TRIM(?)) AND LOWER(TRIM(title)) = LOWER(TRIM(?))
@@ -752,6 +768,18 @@ Type '/help' to see all available commands!"""
                                 AND LOWER(TRIM(title)) = LOWER(TRIM(?))
                                 LIMIT 1
                             ''', (artist_clean, title_clean))
+                            result = cursor.fetchone()
+                        
+                        # If no exact artist match, try to find song by title and warn about artist mismatch
+                        if not result:
+                            cursor.execute('''
+                                SELECT song_key FROM songs 
+                                WHERE LOWER(TRIM(title)) = LOWER(TRIM(?))
+                                ORDER BY 
+                                    CASE WHEN LOWER(TRIM(artist)) = LOWER(TRIM(?)) THEN 0 ELSE 1 END,
+                                    artist
+                                LIMIT 1
+                            ''', (title_clean, artist_clean))
                             result = cursor.fetchone()
                         
                         conn.close()
@@ -807,7 +835,7 @@ Type '/help' to see all available commands!"""
         """Remove a song from the current playlist.
         
         Args:
-            song_info: Song in format "artist: title"
+            song_info: Song in format "artist: title" or just "title"
             
         Returns:
             Response message
@@ -817,13 +845,31 @@ Type '/help' to see all available commands!"""
         # Get current playlist
         current_playlist = self._get_current_playlist()
         
-        # Check if song is in playlist
-        if song_key not in current_playlist.songs:
-            return f"'{song_key}' is not in your '{current_playlist.name}' playlist."
+        # First try exact match
+        if song_key in current_playlist.songs:
+            current_playlist.songs.remove(song_key)
+            return f"Removed '{song_key}' from your '{current_playlist.name}' playlist!"
         
-        # Remove song from playlist
-        current_playlist.songs.remove(song_key)
-        return f"Removed '{song_key}' from your '{current_playlist.name}' playlist!"
+        # Try to match by title (in case artist is different)
+        if ':' in song_key:
+            requested_artist, requested_title = song_key.split(':', 1)
+            requested_title = requested_title.strip().lower()
+            
+            for song in current_playlist.songs:
+                if ':' in song:
+                    _, title = song.split(':', 1)
+                    if title.strip().lower() == requested_title:
+                        current_playlist.songs.remove(song)
+                        return f"Removed '{song}' from your '{current_playlist.name}' playlist!"
+        
+        # Try partial match by title only
+        song_lower = song_key.lower()
+        for song in current_playlist.songs:
+            if song_lower in song.lower() or song.lower() in song_lower:
+                current_playlist.songs.remove(song)
+                return f"Removed '{song}' from your '{current_playlist.name}' playlist!"
+        
+        return f"'{song_key}' is not in your '{current_playlist.name}' playlist."
 
     def _view_playlist(self) -> str:
         """View the current playlist.
@@ -1126,6 +1172,53 @@ Type '/help' to see all available commands!"""
             else:
                 return "Please specify which artist you're asking about. Example: 'What songs does The Beatles have?'"
         
+        # Questions about songs in current playlist
+        # Must be specifically asking about songs, not just complaining
+        elif (("playlist" in question_lower or "just added" in question_lower or "last song" in question_lower) and \
+             ("artist" in question_lower or "song" in question_lower)) or \
+             ("what" in question_lower and "song" in question_lower and ("added" in question_lower or "playlist" in question_lower)):
+            current_playlist = self._get_current_playlist()
+            if not current_playlist.songs:
+                return "Your playlist is empty."
+            
+            # Get the last song added
+            last_song = current_playlist.songs[-1]
+            
+            # Extract song title from question if mentioned
+            song_from_question = self._extract_song_from_question(question)
+            
+            # Only process if we extracted a valid short song name (not a whole sentence)
+            if song_from_question and len(song_from_question.split()) <= 5:
+                # User is asking about a specific song in the playlist
+                # Check if it's in the playlist
+                matching_song = None
+                for song in current_playlist.songs:
+                    if song_from_question.lower() in song.lower():
+                        matching_song = song
+                        break
+                
+                if matching_song:
+                    # Parse the song to get artist
+                    if ':' in matching_song:
+                        artist, title = matching_song.split(':', 1)
+                        artist = artist.strip()
+                        title = title.strip()
+                        return f"The song '{title}' in your playlist is by {artist}."
+                    else:
+                        return f"'{matching_song}' is in your playlist, but I couldn't determine the artist format."
+                else:
+                    # Song not found in playlist
+                    return f"I don't see '{song_from_question}' in your playlist. Would you like to see your current playlist?"
+            else:
+                # General question about last added song
+                if ':' in last_song:
+                    artist, title = last_song.split(':', 1)
+                    artist = artist.strip()
+                    title = title.strip()
+                    return f"The last song added to your playlist is '{title}' by {artist}."
+                else:
+                    return f"The last song in your playlist is '{last_song}'."
+        
         # Default response for unrecognized questions
         else:
             return f"I can answer questions about:\n• Song durations\n• Albums\n• Artist song counts\n• Popular artists\n• Songs by specific artists\n• Database statistics\n• Compilation albums\n\nTry asking something like:\n• 'How many songs does The Beatles have?'\n• 'How long is Bohemian Rhapsody?'\n• 'What album is Hotel California from?'\n• 'Who are the most popular artists?'\n• 'What songs does The Beatles have?'\n• 'How many songs are in the database?'\n• 'Which artist appears most often in Best of 90s albums?'"
@@ -1165,19 +1258,26 @@ Type '/help' to see all available commands!"""
         elif "hotel california" in question.lower():
             return "Hotel California"
         
+        # Try to extract song title with various patterns
+        question_lower = question.lower()
+        
+        # Pattern: "song with the title X" or "song called X" or "song X"
         patterns = [
-            r"is (.+?)",
-            r"song (.+?)",
-            r"track (.+?)",
+            r"title\s+([a-z0-9\s]+?)(?:\s+(?:did|that|you|by|to|from|in|is|\?|,))",  # "title Goodbye did you"
+            r"song\s+(?:with\s+the\s+title\s+|called\s+)?([a-z0-9\s]+?)(?:\s+(?:did|that|you|by|to|from|in|is|\?|,))",  # "song Goodbye" or "song called Goodbye"
+            r"track\s+([a-z0-9\s]+?)(?:\s+(?:did|that|you|by|to|from|in|is|\?|,))",
+            r"'([^']+)'",  # Quoted song name
+            r'"([^"]+)"',  # Double-quoted song name
         ]
         
         for pattern in patterns:
-            match = re.search(pattern, question.lower())
+            match = re.search(pattern, question_lower)
             if match:
                 song = match.group(1).strip()
                 # Clean up common question words
-                song = re.sub(r'\b(how long|what album|from)\b', '', song).strip()
-                return song.title() if song else None
+                song = re.sub(r'\b(how long|what album|from|the)\b', '', song).strip()
+                if song and len(song) > 1:
+                    return song.title()
         
         return None
 
@@ -2207,25 +2307,84 @@ Respond ONLY with valid JSON:
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
         
-        # Extract keywords from theme
-        keywords = theme.lower().split()
+        # Use LLM to extract relevant artist names and genres from the theme
+        extract_prompt = f"""
+Extract relevant artist names and music-related keywords from this theme.
+
+Theme: "{theme}"
+
+Respond ONLY with valid JSON:
+{{
+    "artists": ["artist1", "artist2"],
+    "keywords": ["keyword1", "keyword2"]
+}}
+
+Focus on:
+- Artist names (e.g., "Eminem", "Metallica", "ABBA")
+- Music genres/styles (e.g., "metal", "rap", "rock", "pop")
+- Specific descriptive keywords (e.g., "aggressive", "upbeat")
+
+EXCLUDE common filler words like: "workout", "playlist", "energetic", "music", "songs", "with", "for", "the", "a", "an"
+"""
         
-        # Search by artist or title matching keywords
+        artists_to_search = []
+        keywords_to_search = []
+        
+        try:
+            if self._llm:
+                response = self._llm.generate(
+                    model=OLLAMA_MODEL,
+                    prompt=extract_prompt,
+                    options={"stream": False, "temperature": 0.3, "max_tokens": 200}
+                )
+                
+                response_text = response['response'].strip()
+                json_start = response_text.find('{')
+                json_end = response_text.rfind('}') + 1
+                
+                if json_start != -1 and json_end > json_start:
+                    parsed = json.loads(response_text[json_start:json_end])
+                    artists_to_search = parsed.get('artists', [])
+                    keywords_to_search = parsed.get('keywords', [])
+        except:
+            # Fallback: extract keywords from theme
+            keywords_to_search = theme.lower().split()
+        
+        # Filter out common filler words
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'with', 'for', 'to', 'of', 'in', 
+                      'playlist', 'songs', 'music', 'track', 'tracks', 'some', 'my', 'energetic',
+                      'workout', 'gym', 'session', 'relaxing', 'at', 'home'}
+        keywords_to_search = [k for k in keywords_to_search if k.lower() not in stop_words]
+        
         songs = []
-        for keyword in keywords:
+        
+        # First, search by artist names (highest priority)
+        for artist in artists_to_search:
             cursor.execute('''
                 SELECT song_key FROM songs
-                WHERE LOWER(artist) LIKE ? OR LOWER(title) LIKE ?
+                WHERE LOWER(artist) LIKE ?
                 ORDER BY RANDOM()
                 LIMIT ?
-            ''', (f"%{keyword}%", f"%{keyword}%", count))
+            ''', (f"%{artist.lower()}%", max(3, count // max(1, len(artists_to_search)))))
             
             songs.extend([row[0] for row in cursor.fetchall()])
+        
+        # Then search by genre/keyword in title or artist (if we don't have enough songs)
+        if len(songs) < count and keywords_to_search:
+            for keyword in keywords_to_search[:3]:  # Limit to top 3 keywords
+                cursor.execute('''
+                    SELECT song_key FROM songs
+                    WHERE LOWER(artist) LIKE ? OR LOWER(title) LIKE ?
+                    ORDER BY RANDOM()
+                    LIMIT ?
+                ''', (f"%{keyword}%", f"%{keyword}%", count // max(1, len(keywords_to_search))))
+                
+                songs.extend([row[0] for row in cursor.fetchall()])
         
         # Remove duplicates and limit
         songs = list(dict.fromkeys(songs))[:count]
         
-        # If not enough songs, add random songs
+        # If still not enough songs, add random songs
         if len(songs) < count:
             cursor.execute('''
                 SELECT song_key FROM songs
@@ -2254,60 +2413,102 @@ Parse this user message and identify the intent and entities.
 User message: "{text}"
 
 Possible intents:
-- add_songs: User wants to add songs
+- add_songs: User wants to add songs (even if they mention creating/having a playlist, if they're adding specific songs, it's add_songs)
 - remove_songs: User wants to remove songs
 - recommend: User wants recommendations
-- generate_playlist: User wants to generate a playlist
-- question: User is asking a question
+- generate_playlist: User wants to automatically generate a playlist based on a theme/mood (NOT when adding specific songs)
+- view_playlist: User wants to see/show/view/display their current playlist
+- question: User is asking a question about songs, artists, albums, or database
+- goodbye: User is saying goodbye/farewell/ending conversation
 - unknown: Cannot determine intent
 
 Respond ONLY with valid JSON:
 {{
     "intent": "intent_name",
     "entities": {{
-        "songs": ["song names if mentioned"],
+        "songs": ["song TITLES only if mentioned, e.g. 'Money Money Money', 'Bohemian Rhapsody'"],
         "artists": ["artist names if mentioned"],
         "selection": "selection criteria (e.g., 'first two', 'all except last', 'by Metallica')",
         "description": "playlist description if generating"
     }}
 }}
+
+Examples:
+- "Remove Money, Money, Money by ABBA" -> {{"intent": "remove_songs", "entities": {{"songs": ["Money, Money, Money"], "artists": ["ABBA"]}}}}
+- "Add Goodbye by Chris Young" -> {{"intent": "add_songs", "entities": {{"songs": ["Goodbye"], "artists": ["Chris Young"]}}}}
 """
         
         try:
-            response = self._llm.generate(
-                model=OLLAMA_MODEL,
-                prompt=parse_prompt,
-                options={"stream": False, "temperature": 0.3, "max_tokens": 200}
-            )
-            
-            response_text = response['response'].strip()
-            json_start = response_text.find('{')
-            json_end = response_text.rfind('}') + 1
-            
-            if json_start != -1 and json_end > json_start:
-                parsed = json.loads(response_text[json_start:json_end])
-                intent = parsed.get('intent', 'unknown')
-                entities = parsed.get('entities', {})
+            if self._llm:
+                response = self._llm.generate(
+                    model=OLLAMA_MODEL,
+                    prompt=parse_prompt,
+                    options={"stream": False, "temperature": 0.3, "max_tokens": 200}
+                )
                 
-                # Route to appropriate handler
-                if intent == 'add_songs':
-                    return self._handle_nl_add_songs(entities)
-                elif intent == 'remove_songs':
-                    return self._handle_nl_remove_songs(entities)
-                elif intent == 'recommend':
-                    song = entities.get('songs', [None])[0]
-                    return self._recommend_songs(song)
-                elif intent == 'generate_playlist':
-                    description = entities.get('description', text)
-                    return self._generate_playlist_from_description(description)
-                elif intent == 'question':
-                    return self._answer_question(text)
+                response_text = response['response'].strip()
+                json_start = response_text.find('{')
+                json_end = response_text.rfind('}') + 1
+                
+                if json_start != -1 and json_end > json_start:
+                    parsed = json.loads(response_text[json_start:json_end])
+                    intent = parsed.get('intent', 'unknown')
+                    entities = parsed.get('entities', {})
+                    
+                    # Route to appropriate handler
+                    if intent == 'add_songs':
+                        return self._handle_nl_add_songs(entities)
+                    elif intent == 'remove_songs':
+                        return self._handle_nl_remove_songs(entities)
+                    elif intent == 'recommend':
+                        song = entities.get('songs', [None])[0]
+                        return self._recommend_songs(song)
+                    elif intent == 'generate_playlist':
+                        description = entities.get('description', text)
+                        return self._generate_playlist_from_description(description)
+                    elif intent == 'view_playlist':
+                        return self._view_playlist()
+                    elif intent == 'question':
+                        return self._answer_question(text)
+                    elif intent == 'goodbye':
+                        self.goodbye()
+                        return None  # Return None to indicate conversation should end
         except Exception as e:
             # Fallback to pattern matching if LLM fails
             pass
         
         # Fallback pattern matching for common natural language commands
         text_lower = text.lower().strip()
+        
+        # Check for goodbye/farewell messages (but not when referring to songs)
+        # Avoid false positives like "remove the Goodbye song"
+        goodbye_patterns = [
+            'goodbye', 'good bye', 'bye', 'see you', 'farewell', 
+            'talk to you later', 'gtg', 'got to go', 'gotta go',
+            'have to go', 'leaving', 'exit', 'stop'
+        ]
+        
+        # Check if goodbye patterns appear in a song-reference context
+        is_song_reference = any(word in text_lower for word in [
+            'song', 'track', 'titled', 'called', 'named', 'by '
+        ])
+        
+        # Only trigger goodbye if it's not a song reference OR if goodbye is at the end/start
+        is_goodbye = False
+        for pattern in goodbye_patterns:
+            if pattern in text_lower:
+                # Check if it's likely the user saying goodbye (not referring to a song)
+                # Goodbye is OK if: starts/ends with it, or standalone, or not near song keywords
+                if text_lower.startswith(pattern) or text_lower.endswith(pattern):
+                    is_goodbye = True
+                    break
+                elif not is_song_reference and pattern in text_lower:
+                    is_goodbye = True
+                    break
+        
+        if is_goodbye:
+            self.goodbye()
+            return None  # Return None to indicate conversation should end
         
         # Pattern matching for common commands
         if 'recommend' in text_lower or 'suggest' in text_lower or 'recommendation' in text_lower:
@@ -2321,7 +2522,23 @@ Respond ONLY with valid JSON:
                     song_match = match.group(1).strip()
             return self._recommend_songs(song_match)
         
-        if ('generate' in text_lower or 'create' in text_lower) and 'playlist' in text_lower:
+        # Check for adding songs first (higher priority than playlist generation)
+        # Patterns like "add X", "can you add X", "add X to playlist"
+        add_patterns = ['add ', ' add ']
+        has_add_command = any(pattern in text_lower for pattern in add_patterns)
+        
+        # Check for playlist generation - must explicitly mention generating/creating playlist
+        # But NOT if they're asking to add songs
+        is_playlist_generation = False
+        if not has_add_command:  # Only check for generation if NOT adding songs
+            if 'generate' in text_lower and 'playlist' in text_lower:
+                # "generate playlist" is always playlist generation
+                is_playlist_generation = True
+            elif 'create' in text_lower and 'playlist' in text_lower:
+                # "create a workout playlist" = generation
+                is_playlist_generation = True
+        
+        if is_playlist_generation:
             # Extract description - extract the theme/description part
             import re
             # Pattern 1: "generate workout playlist" -> description = "workout"
@@ -2388,26 +2605,51 @@ Respond ONLY with valid JSON:
             count = len(current_playlist.songs)
             return f"Your '{current_playlist.name}' playlist has {count} song(s)."
         
+        # Handle remove commands
+        if 'remove' in text_lower and 'from' in text_lower:
+            # Extract song info after "remove" and before "from"
+            import re
+            match = re.search(r'remove\s+(.+?)\s+(?:from|and)', text_lower)
+            if match:
+                song_info = match.group(1).strip()
+                # Normalize and search for the song
+                normalized = self._normalize_song_name(song_info)
+                return self._remove_song(normalized)
+        
         return "I'm sorry, I don't understand. Type '/help' to see available commands."
 
     def _handle_nl_add_songs(self, entities: dict) -> str:
         """Handle natural language add songs command."""
         selection = entities.get('selection', '')
         songs = entities.get('songs', [])
+        artists = entities.get('artists', [])
         
         if songs:
             # Add specific songs (R5.6: Handle complex song names)
             added = []
-            for song in songs:
-                # Normalize song name - remove special characters for matching
-                normalized_song = self._normalize_song_name(song)
-                matches = self._search_songs_by_title_in_db(normalized_song)
-                if not matches:
-                    # Try original search
-                    matches = self._search_songs_by_title_in_db(song)
-                if matches:
-                    result = self._add_song(matches[0])
-                    added.append(matches[0])
+            not_found = []
+            
+            for i, song in enumerate(songs):
+                # If we have a matching artist for this song, construct "artist: title" format
+                if artists and i < len(artists):
+                    song_info = f"{artists[i]}: {song}"
+                    result = self._add_song(song_info)
+                    if "Added" in result or "already in" in result:
+                        added.append(song)
+                    else:
+                        not_found.append(song)
+                else:
+                    # Normalize song name - remove special characters for matching
+                    normalized_song = self._normalize_song_name(song)
+                    matches = self._search_songs_by_title_in_db(normalized_song)
+                    if not matches:
+                        # Try original search
+                        matches = self._search_songs_by_title_in_db(song)
+                    if matches:
+                        result = self._add_song(matches[0])
+                        added.append(matches[0])
+                    else:
+                        not_found.append(song)
             
             if added:
                 return f"Added {len(added)} song(s) to your playlist!"
@@ -2424,9 +2666,37 @@ Respond ONLY with valid JSON:
         """Handle natural language remove songs command."""
         selection = entities.get('selection', '')
         artists = entities.get('artists', [])
+        songs = entities.get('songs', [])
         
         current_playlist = self._get_current_playlist()
         
+        # If specific songs are mentioned, try to remove them
+        if songs:
+            removed = []
+            for song_name in songs:
+                # Try to find and remove by song title
+                found = False
+                for song in current_playlist.songs[:]:
+                    # Check if song title matches (case-insensitive)
+                    if ':' in song:
+                        _, title = song.split(':', 1)
+                        if song_name.lower() in title.lower() or title.lower() in song_name.lower():
+                            current_playlist.songs.remove(song)
+                            removed.append(song)
+                            found = True
+                            break
+                    elif song_name.lower() in song.lower():
+                        current_playlist.songs.remove(song)
+                        removed.append(song)
+                        found = True
+                        break
+            
+            if removed:
+                return f"Removed {len(removed)} song(s) from your playlist."
+            else:
+                return f"Couldn't find the specified song(s) in your playlist."
+        
+        # If artists are mentioned, remove songs by those artists
         if artists:
             # Remove all songs by specific artists
             removed = []
@@ -2449,6 +2719,8 @@ Respond ONLY with valid JSON:
 
     def _handle_selection_add(self, selection: str) -> str:
         """Handle selection-based adding (e.g., 'first two', 'all except last')."""
+        import re
+        
         last_recs = self._get_last_recommendations()
         
         if not last_recs:
@@ -2458,9 +2730,31 @@ Respond ONLY with valid JSON:
         songs_to_add = []
         
         # Parse different selection patterns
-        if 'first' in selection_lower:
+        # Handle ordinal numbers: "fourth song", "the second one", etc.
+        ordinal_pattern = r'\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|1st|2nd|3rd|4th|5th|6th|7th|8th|9th|10th)\b'
+        ordinal_match = re.search(ordinal_pattern, selection_lower)
+        if ordinal_match:
+            ordinal_map = {
+                'first': 1, '1st': 1,
+                'second': 2, '2nd': 2,
+                'third': 3, '3rd': 3,
+                'fourth': 4, '4th': 4,
+                'fifth': 5, '5th': 5,
+                'sixth': 6, '6th': 6,
+                'seventh': 7, '7th': 7,
+                'eighth': 8, '8th': 8,
+                'ninth': 9, '9th': 9,
+                'tenth': 10, '10th': 10
+            }
+            ordinal = ordinal_match.group(1)
+            index = ordinal_map.get(ordinal, 1) - 1  # Convert to 0-based index
+            if 0 <= index < len(last_recs):
+                songs_to_add = [last_recs[index]]
+            else:
+                return f"There are only {len(last_recs)} recommendations available."
+        
+        elif 'first' in selection_lower:
             # Extract number
-            import re
             match = re.search(r'first\s+(\w+|\d+)', selection_lower)
             if match:
                 num_word = match.group(1)
@@ -2474,7 +2768,6 @@ Respond ONLY with valid JSON:
                 songs_to_add = last_recs[:num]
         
         elif 'last' in selection_lower and 'except' not in selection_lower:
-            import re
             match = re.search(r'last\s+(\w+|\d+)', selection_lower)
             if match:
                 num_word = match.group(1)
@@ -2490,7 +2783,6 @@ Respond ONLY with valid JSON:
         elif 'all' in selection_lower and 'except' in selection_lower:
             # Add all except some
             if 'last' in selection_lower:
-                import re
                 match = re.search(r'except.*last\s+(\w+|\d+)', selection_lower)
                 if match:
                     num_word = match.group(1)
@@ -2500,7 +2792,6 @@ Respond ONLY with valid JSON:
                 else:
                     songs_to_add = last_recs[:-1]
             elif 'first' in selection_lower:
-                import re
                 match = re.search(r'except.*first\s+(\w+|\d+)', selection_lower)
                 if match:
                     num_word = match.group(1)
@@ -2511,7 +2802,6 @@ Respond ONLY with valid JSON:
                     songs_to_add = last_recs[1:]
             elif 'by' in selection_lower or 'artist' in selection_lower:
                 # R5.2: Handle "all except the one by [artist]"
-                import re
                 match = re.search(r'except.*(?:the|one|song).*by\s+([a-zA-Z0-9\s]+)', selection_lower)
                 if match:
                     artist_name = match.group(1).strip()

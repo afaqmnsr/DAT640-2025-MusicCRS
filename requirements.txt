@@ -3,3 +3,5 @@ ollama
 python-dotenv
 Pillow
 requests
+websocket-client
+colorama
