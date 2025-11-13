@@ -241,16 +241,39 @@ class MusicCRS(Agent):
                 # Handle greeting from simulator
                 response = "Hello! I'm MusicCRS, your music recommendation assistant. I can help you create and manage playlists. Type '/help' to see what I can do!"
             elif utterance.text.startswith("/add "):
-                song_info = utterance.text[5:]  # Remove "/add "
-                # Remove trailing phrases like "to my [playlist] playlist" or "to the [playlist] playlist"
-                # Pattern: "to [optional article] [playlist name] [optional 'playlist' word]"
-                # This matches: "to my Gym Boost playlist", "to the Gym Boost playlist", "to Gym Boost playlist", etc.
-                song_info = re.sub(r'\s+to\s+(?:my|the|a|an)?\s+[A-Za-z][A-Za-z\s]*?\s*playlist.*$', '', song_info, flags=re.IGNORECASE).strip()
-                # Also remove other common trailing phrases like "from my playlist", "in my playlist"
-                song_info = re.sub(r'\s+(?:from|in|on|at)\s+(?:my|the|a|an)?\s+[A-Za-z][A-Za-z\s]*?\s*playlist.*$', '', song_info, flags=re.IGNORECASE).strip()
-                # R5.6: Normalize song name for better matching of complex names
-                normalized = self._normalize_song_name(song_info)
-                response = self._add_song(normalized)
+                try:
+                    song_info = utterance.text[5:]  # Remove "/add "
+                    # Remove trailing phrases like "to my [playlist] playlist" or "to the [playlist] playlist"
+                    # Pattern: "to [optional article] [playlist name] [optional 'playlist' word]"
+                    # This matches: "to my Gym Boost playlist", "to the Gym Boost playlist", "to Gym Boost playlist", etc.
+                    # Be more conservative - only match if "playlist" appears at the end
+                    original_song_info = song_info
+                    # Only remove if "playlist" appears near the end (last 50 chars to avoid matching song titles)
+                    if len(song_info) > 10 and 'playlist' in song_info[-50:].lower():
+                        # More conservative pattern - only match if we see "to [article] [name] playlist" pattern
+                        song_info = re.sub(r'\s+to\s+(?:my|the|a|an)\s+[A-Za-z][A-Za-z\s]{1,30}?\s+playlist.*$', '', song_info, flags=re.IGNORECASE).strip()
+                        # Also handle "to [name] playlist" without article
+                        song_info = re.sub(r'\s+to\s+[A-Za-z][A-Za-z\s]{1,30}?\s+playlist.*$', '', song_info, flags=re.IGNORECASE).strip()
+                        # Also remove other common trailing phrases like "from my playlist", "in my playlist"
+                        song_info = re.sub(r'\s+(?:from|in|on|at)\s+(?:my|the|a|an)\s+[A-Za-z][A-Za-z\s]{1,30}?\s+playlist.*$', '', song_info, flags=re.IGNORECASE).strip()
+                    
+                    # If we stripped too much and song_info is empty or too short, use original
+                    if not song_info or len(song_info) < 3:
+                        song_info = original_song_info
+                    
+                    # R5.6: Normalize song name for better matching of complex names
+                    normalized = self._normalize_song_name(song_info)
+                    response = self._add_song(normalized)
+                except Exception as e:
+                    # Log the error for debugging
+                    import traceback
+                    print(f"Error in /add command: {e}")
+                    print(traceback.format_exc())
+                    # Try without normalization as fallback
+                    try:
+                        response = self._add_song(song_info if 'song_info' in locals() else utterance.text[5:])
+                    except:
+                        response = "I'm sorry, there was an error processing your request. Please try again or use '/help' to see available commands."
             elif utterance.text.startswith("/remove "):
                 song_info = utterance.text[8:]  # Remove "/remove "
                 response = self._remove_song(song_info)
@@ -4035,7 +4058,8 @@ Examples:
             import re
             # Pattern 1: "add some songs (similar to|like|by|from artists like) [artist]"
             # Handle both "add some songs by X" and "add some songs from artists like X"
-            add_some_pattern = re.search(r'add\s+some\s+(?:songs?|tracks?)\s+(?:similar\s+to|like|by|from\s+artists?\s+like)\s+([A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?(?:\s*,\s*[A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?)*(?:\s+or\s+[A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?)?)(?:\s+(?:or|and|to|from|in|on|at|the|my|a|an|playlist|song|track|that|fits|fit|to|add).*)?$', text_lower, re.IGNORECASE)
+            # Allow words before "add" like "can you add", "please add", etc.
+            add_some_pattern = re.search(r'(?:can\s+you|please|i\'?d\s+like\s+to|i\s+would\s+like\s+to)?\s*add\s+some\s+(?:songs?|tracks?)\s+(?:similar\s+to|like|by|from\s+artists?\s+like)\s+([A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?(?:\s*,\s*[A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?)*(?:\s+or\s+[A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?)?)(?:\s+(?:or|and|to|from|in|on|at|the|my|a|an|playlist|song|track|that|fits|fit|to|add|to\s+my|to\s+the).*)?$', text_lower, re.IGNORECASE)
             if add_some_pattern:
                 # Extract the full match and split by commas and "or"
                 full_match = add_some_pattern.group(1)
@@ -4089,6 +4113,57 @@ Examples:
                         # If no songs found, try to get recommendations for first artist
                         if artists:
                             return self._recommend_songs_by_artist(artists[0], limit=5)
+            
+            # Pattern 1b: Simpler fallback - "add some songs from [artists]" or "add some songs by [artists]"
+            # This catches cases where the main pattern might not match
+            if not add_some_pattern:
+                # Try simpler pattern: "add some songs from [artist list]" or "add some songs by [artist list]" or "add some songs from artists like [list]"
+                simple_add_some = re.search(r'(?:can\s+you|please|i\'?d\s+like\s+to|i\s+would\s+like\s+to)?\s*add\s+some\s+(?:songs?|tracks?)\s+(?:from\s+artists?\s+like|from|by)\s+([A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?(?:\s*,\s*[A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?)*(?:\s+or\s+[A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?)?)', text_lower, re.IGNORECASE)
+                if simple_add_some:
+                    full_match = simple_add_some.group(1)
+                    parts = re.split(r'\s*,\s*|\s+or\s+', full_match, flags=re.IGNORECASE)
+                    artists = []
+                    for part in parts:
+                        artist_name = part.strip()
+                        artist_name = re.sub(r'\s+(?:or|and|to|from|in|on|at|the|my|a|an|playlist|song|track|that|fits|fit|to|add|to\s+my|to\s+the).*$', '', artist_name, flags=re.IGNORECASE).strip()
+                        if artist_name and len(artist_name.split()) <= 5:
+                            artists.append(artist_name)
+                    
+                    if artists:
+                        # Get songs by all mentioned artists
+                        all_songs = []
+                        for artist in artists:
+                            recommendations_response = self._recommend_songs_by_artist(artist, limit=5)
+                            song_keys = self._get_last_recommendations()
+                            if song_keys:
+                                all_songs.extend(song_keys)
+                        
+                        if all_songs:
+                            all_songs = list(dict.fromkeys(all_songs))
+                            current_playlist = self._get_current_playlist()
+                            added = []
+                            for song_key in all_songs:
+                                if song_key not in current_playlist.songs:
+                                    current_playlist.songs.append(song_key)
+                                    added.append(song_key)
+                            
+                            if added:
+                                response = f"Added {len(added)} song(s) by {', '.join(artists)} to your playlist:\n"
+                                for i, song in enumerate(added[:5], 1):
+                                    if ': ' in song:
+                                        _, title = song.split(': ', 1)
+                                        response += f"{i}. {title}\n"
+                                    else:
+                                        response += f"{i}. {song}\n"
+                                if len(added) > 5:
+                                    response += f"... and {len(added) - 5} more\n"
+                                response += "\n" + self._view_playlist()
+                                return response
+                            else:
+                                return f"All recommended songs by {', '.join(artists)} are already in your playlist."
+                        else:
+                            if artists:
+                                return self._recommend_songs_by_artist(artists[0], limit=5)
             
             # Pattern 2: "add some of their songs" - extract artists from context
             # Look for artist names mentioned earlier in the text (before "some of their")
@@ -5105,6 +5180,20 @@ Examples:
         # Fix double letters (e.g., "chriis" -> "chris", "creaator" -> "creator")
         normalized = re.sub(r'([a-z])\1{2,}', r'\1\1', normalized, flags=re.IGNORECASE)
         
+        # IMPORTANT: Handle "Title by Artist" format BEFORE other processing
+        # Convert "Title by Artist" to "Artist: Title" format
+        # Pattern: match "by [artist]" at the end (but not "by" in the middle of title)
+        by_artist_pattern = r'^(.+?)\s+by\s+([^,\.]+?)(?:\s+(?:to|from|in|on|at|the|my|a|an|playlist|song|track|version|original|$))'
+        by_artist_match = re.search(by_artist_pattern, normalized, re.IGNORECASE)
+        if by_artist_match:
+            title_part = by_artist_match.group(1).strip()
+            artist_part = by_artist_match.group(2).strip()
+            # Clean up common prefixes like "the original version of"
+            title_part = re.sub(r'^(?:the\s+)?(?:original\s+)?(?:version\s+of\s+)?', '', title_part, flags=re.IGNORECASE).strip()
+            # Only convert if both parts are reasonable
+            if title_part and artist_part and len(artist_part.split()) <= 5:
+                return f"{artist_part}: {title_part}"
+        
         # Remove content in parentheses (e.g., "(with The Weeknd & 21 Savage)")
         normalized = re.sub(r'\([^)]*\)', '', normalized)
         
@@ -5123,8 +5212,15 @@ Examples:
         normalized = re.sub(r"(?<!\w)'(?!s\s)", '', normalized)  # Remove ' that's not 's
         normalized = re.sub(r"'(?![sS]\s)", '', normalized)  # Remove ' that's not followed by 's
         
-        # Remove "by [artist]" suffix if present
-        normalized = re.sub(r'\s+by\s+.*$', '', normalized, flags=re.IGNORECASE)
+        # Don't remove "by [artist]" here - it should have been converted above
+        # Only remove if it's clearly not an artist (e.g., "by the way" or "by myself")
+        # But be conservative - if we see "by [Capitalized Word]", it's likely an artist
+        if ' by ' in normalized.lower():
+            # Check if "by" is followed by a capitalized word (likely artist)
+            by_capitalized = re.search(r'\s+by\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', normalized)
+            if not by_capitalized:
+                # Not followed by capitalized words, might be phrase like "by the way"
+                normalized = re.sub(r'\s+by\s+.*$', '', normalized, flags=re.IGNORECASE)
         
         # Remove trailing punctuation that might interfere with search
         normalized = re.sub(r'[^\w\s:]+$', '', normalized)  # Remove trailing punctuation (but keep :)
