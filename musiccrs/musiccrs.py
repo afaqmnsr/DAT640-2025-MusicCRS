@@ -242,6 +242,12 @@ class MusicCRS(Agent):
                 response = "Hello! I'm MusicCRS, your music recommendation assistant. I can help you create and manage playlists. Type '/help' to see what I can do!"
             elif utterance.text.startswith("/add "):
                 song_info = utterance.text[5:]  # Remove "/add "
+                # Remove trailing phrases like "to my [playlist] playlist" or "to the [playlist] playlist"
+                # Pattern: "to [optional article] [playlist name] [optional 'playlist' word]"
+                # This matches: "to my Gym Boost playlist", "to the Gym Boost playlist", "to Gym Boost playlist", etc.
+                song_info = re.sub(r'\s+to\s+(?:my|the|a|an)?\s+[A-Za-z][A-Za-z\s]*?\s*playlist.*$', '', song_info, flags=re.IGNORECASE).strip()
+                # Also remove other common trailing phrases like "from my playlist", "in my playlist"
+                song_info = re.sub(r'\s+(?:from|in|on|at)\s+(?:my|the|a|an)?\s+[A-Za-z][A-Za-z\s]*?\s*playlist.*$', '', song_info, flags=re.IGNORECASE).strip()
                 # R5.6: Normalize song name for better matching of complex names
                 normalized = self._normalize_song_name(song_info)
                 response = self._add_song(normalized)
@@ -3800,23 +3806,66 @@ Examples:
             
             # FIRST: Check for "songs by [artist]" or "recommendations by [artist]" patterns
             # This has highest priority for artist-based recommendations
-            songs_by_match = re.search(r'(?:songs?|tracks?|recommendations?)\s+by\s+([A-Za-z][A-Za-z\s]+?)(?:\s+(?:to|from|in|on|at|the|my|a|an|playlist|song|track|add|and|or).*)?$', text_lower, re.IGNORECASE)
+            # Handle multiple artists: "songs by X or Y" or "songs by X, Y, or Z"
+            songs_by_pattern = r'(?:songs?|tracks?|recommendations?)\s+by\s+([A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?)(?:\s*,\s*([A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?))*(?:\s+or\s+([A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?))?(?:\s+(?:to|from|in|on|at|the|my|a|an|playlist|song|track|add|and|that|i|might|enjoy).*)?$'
+            songs_by_match = re.search(songs_by_pattern, text_lower, re.IGNORECASE)
             if songs_by_match:
-                artist_name = songs_by_match.group(1).strip()
-                # Clean up trailing words
-                artist_name = re.sub(r'\s+(?:to|from|in|on|at|the|my|a|an|playlist|song|track|add|and|or).*$', '', artist_name, flags=re.IGNORECASE).strip()
-                if artist_name:
-                    return self._recommend_songs_by_artist(artist_name, limit=limit)
+                # Extract all artists from the match
+                artists = []
+                for group in songs_by_match.groups():
+                    if group:
+                        artist = group.strip()
+                        # Clean up trailing words
+                        artist = re.sub(r'\s+(?:to|from|in|on|at|the|my|a|an|playlist|song|track|add|and|or|that|i|might|enjoy).*$', '', artist, flags=re.IGNORECASE).strip()
+                        if artist and len(artist.split()) <= 5:
+                            artists.append(artist)
+                
+                if artists:
+                    # If multiple artists, recommend from first one (or could combine)
+                    # For now, use first artist
+                    return self._recommend_songs_by_artist(artists[0], limit=limit)
+            
+            # Check for "artists like X or Y" or "artists like X, Y, or Z" pattern
+            # This handles phrases like "artists like Ka2 or Vettche"
+            # Match the full phrase and then split by commas and "or"
+            artists_like_pattern = r'artists?\s+(?:like|such\s+as|including)\s+([A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?(?:\s*,\s*[A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?)*(?:\s+or\s+[A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?)?)(?:\s+(?:to|from|in|on|at|the|my|a|an|playlist|song|track|add|and|that|i|might|enjoy|for|are|that|are).*)?$'
+            artists_like_match = re.search(artists_like_pattern, text_lower, re.IGNORECASE)
+            if artists_like_match:
+                # Extract the full match and split by commas and "or"
+                full_match = artists_like_match.group(1)
+                # Split by comma or "or" to get individual artists
+                parts = re.split(r'\s*,\s*|\s+or\s+', full_match, flags=re.IGNORECASE)
+                artists = []
+                for part in parts:
+                    artist = part.strip()
+                    # Clean up trailing words
+                    artist = re.sub(r'\s+(?:to|from|in|on|at|the|my|a|an|playlist|song|track|add|and|or|that|i|might|enjoy|for|are).*$', '', artist, flags=re.IGNORECASE).strip()
+                    if artist and len(artist.split()) <= 5:
+                        artists.append(artist)
+                
+                if artists:
+                    # Use first artist for recommendations
+                    return self._recommend_songs_by_artist(artists[0], limit=limit)
             
             # Also check for "recommend some [genre] music like [artist]" or "recommend songs like [artist]"
             # Pattern: "like [Artist]" when it's clearly about recommendations
-            like_artist_match = re.search(r'(?:recommend|suggest|recommendations?)\s+(?:some\s+)?(?:songs?|tracks?|music)?\s*(?:like|by|from)\s+([A-Za-z][A-Za-z\s]+?)(?:\s+(?:to|from|in|on|at|the|my|a|an|playlist|song|track|add|and|or|that|i|might).*)?$', text_lower, re.IGNORECASE)
+            # Handle "recommend songs like X or Y"
+            like_artist_pattern = r'(?:recommend|suggest|recommendations?)\s+(?:some\s+)?(?:songs?|tracks?|music)?\s*(?:like|by|from)\s+([A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?)(?:\s*,\s*([A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?))*(?:\s+or\s+([A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?))?(?:\s+(?:to|from|in|on|at|the|my|a|an|playlist|song|track|add|and|that|i|might|enjoy|for|are).*)?$'
+            like_artist_match = re.search(like_artist_pattern, text_lower, re.IGNORECASE)
             if like_artist_match:
-                artist_name = like_artist_match.group(1).strip()
-                # Clean up trailing words
-                artist_name = re.sub(r'\s+(?:to|from|in|on|at|the|my|a|an|playlist|song|track|add|and|or|that|i|might|enjoy).*$', '', artist_name, flags=re.IGNORECASE).strip()
-                if artist_name and len(artist_name.split()) <= 5:  # Reasonable artist name length
-                    return self._recommend_songs_by_artist(artist_name, limit=limit)
+                # Extract all artists from the match
+                artists = []
+                for group in like_artist_match.groups():
+                    if group:
+                        artist = group.strip()
+                        # Clean up trailing words
+                        artist = re.sub(r'\s+(?:to|from|in|on|at|the|my|a|an|playlist|song|track|add|and|or|that|i|might|enjoy|for|are).*$', '', artist, flags=re.IGNORECASE).strip()
+                        if artist and len(artist.split()) <= 5:
+                            artists.append(artist)
+                
+                if artists:
+                    # Use first artist for recommendations
+                    return self._recommend_songs_by_artist(artists[0], limit=limit)
             
             # Extract song/artist name if mentioned
             song_match = None
@@ -3984,61 +4033,132 @@ Examples:
         # This must happen before any other add command processing
         if 'add' in text_lower and 'some' in text_lower and ('song' in text_lower or 'track' in text_lower):
             import re
-            # Pattern 1: "add some songs (similar to|like|by) [artist]"
-            add_some_pattern = re.search(r'add\s+some\s+(?:songs?|tracks?)\s+(?:similar\s+to|like|by)\s+([A-Za-z][A-Za-z\s]+?)(?:\s+(?:or|and|to|from|in|on|at|the|my|a|an|playlist|song|track|that|fits|fit).*)?$', text_lower, re.IGNORECASE)
+            # Pattern 1: "add some songs (similar to|like|by|from artists like) [artist]"
+            # Handle both "add some songs by X" and "add some songs from artists like X"
+            add_some_pattern = re.search(r'add\s+some\s+(?:songs?|tracks?)\s+(?:similar\s+to|like|by|from\s+artists?\s+like)\s+([A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?(?:\s*,\s*[A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?)*(?:\s+or\s+[A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü\s]+?)?)(?:\s+(?:or|and|to|from|in|on|at|the|my|a|an|playlist|song|track|that|fits|fit|to|add).*)?$', text_lower, re.IGNORECASE)
             if add_some_pattern:
-                artist_name = add_some_pattern.group(1).strip()
-                # Clean up trailing words
-                artist_name = re.sub(r'\s+(?:or|and|to|from|in|on|at|the|my|a|an|playlist|song|track|that|fits|fit).*$', '', artist_name, flags=re.IGNORECASE).strip()
-                # Handle "or" or "and" - extract all artists
+                # Extract the full match and split by commas and "or"
+                full_match = add_some_pattern.group(1)
+                # Split by comma or "or" to get individual artists
+                parts = re.split(r'\s*,\s*|\s+or\s+', full_match, flags=re.IGNORECASE)
                 artists = []
-                if ' or ' in artist_name.lower() or ' and ' in artist_name.lower():
-                    # Split by "or" or "and"
-                    parts = re.split(r'\s+(?:or|and)\s+', artist_name, flags=re.IGNORECASE)
-                    artists = [p.strip() for p in parts if p.strip()]
-                else:
-                    artists = [artist_name]
+                for part in parts:
+                    artist_name = part.strip()
+                    # Clean up trailing words
+                    artist_name = re.sub(r'\s+(?:or|and|to|from|in|on|at|the|my|a|an|playlist|song|track|that|fits|fit|to|add).*$', '', artist_name, flags=re.IGNORECASE).strip()
+                    if artist_name and len(artist_name.split()) <= 5:
+                        artists.append(artist_name)
                 
-                # Get songs by all mentioned artists
-                all_songs = []
-                for artist in artists:
-                    if artist:
+                if artists:
+                    # Get songs by all mentioned artists
+                    all_songs = []
+                    for artist in artists:
                         # Get recommendations by this artist
                         recommendations_response = self._recommend_songs_by_artist(artist, limit=5)
                         # Get the stored recommendations
                         song_keys = self._get_last_recommendations()
                         if song_keys:
                             all_songs.extend(song_keys)
-                
-                if all_songs:
-                    # Remove duplicates
-                    all_songs = list(dict.fromkeys(all_songs))
-                    # Add all recommended songs
-                    current_playlist = self._get_current_playlist()
-                    added = []
-                    for song_key in all_songs:
-                        if song_key not in current_playlist.songs:
-                            current_playlist.songs.append(song_key)
-                            added.append(song_key)
                     
-                    if added:
-                        response = f"Added {len(added)} song(s) by {', '.join(artists)} to your playlist:\n"
-                        for i, song in enumerate(added[:5], 1):
-                            if ': ' in song:
-                                _, title = song.split(': ', 1)
-                                response += f"{i}. {title}\n"
-                            else:
-                                response += f"{i}. {song}\n"
-                        if len(added) > 5:
-                            response += f"... and {len(added) - 5} more\n"
-                        response += "\n" + self._view_playlist()
-                        return response
+                    if all_songs:
+                        # Remove duplicates
+                        all_songs = list(dict.fromkeys(all_songs))
+                        # Add all recommended songs
+                        current_playlist = self._get_current_playlist()
+                        added = []
+                        for song_key in all_songs:
+                            if song_key not in current_playlist.songs:
+                                current_playlist.songs.append(song_key)
+                                added.append(song_key)
+                        
+                        if added:
+                            response = f"Added {len(added)} song(s) by {', '.join(artists)} to your playlist:\n"
+                            for i, song in enumerate(added[:5], 1):
+                                if ': ' in song:
+                                    _, title = song.split(': ', 1)
+                                    response += f"{i}. {title}\n"
+                                else:
+                                    response += f"{i}. {song}\n"
+                            if len(added) > 5:
+                                response += f"... and {len(added) - 5} more\n"
+                            response += "\n" + self._view_playlist()
+                            return response
+                        else:
+                            return f"All recommended songs by {', '.join(artists)} are already in your playlist."
                     else:
-                        return f"All recommended songs by {', '.join(artists)} are already in your playlist."
-                else:
-                    # If no songs found, try to get recommendations for first artist
-                    if artists:
-                        return self._recommend_songs_by_artist(artists[0], limit=5)
+                        # If no songs found, try to get recommendations for first artist
+                        if artists:
+                            return self._recommend_songs_by_artist(artists[0], limit=5)
+            
+            # Pattern 2: "add some of their songs" - extract artists from context
+            # Look for artist names mentioned earlier in the text (before "some of their")
+            if 'their' in text_lower or 'them' in text_lower:
+                # Try to find artist names in the text before "some of their"
+                # Pattern: "along the lines of X or Y" or "like X and Y" or "X and Y"
+                artist_patterns = [
+                    # Pattern: "along the lines of X or Y" - capture full names
+                    r'along\s+the\s+lines\s+of\s+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)\s+(?:or|and)\s+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)',
+                    r'along\s+the\s+lines\s+of\s+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)',
+                    # Pattern: "like X or Y"
+                    r'like\s+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)\s+(?:or|and)\s+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)',
+                    r'like\s+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)',
+                    # Pattern: "X and Y" or "X or Y" (capitalized names)
+                    r'([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)+)\s+(?:and|or)\s+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)+)',
+                ]
+                
+                artists_found = []
+                for pattern in artist_patterns:
+                    match = re.search(pattern, text)
+                    if match:
+                        artist1 = match.group(1).strip() if match.group(1) else None
+                        artist2 = match.group(2).strip() if len(match.groups()) > 1 and match.group(2) else None
+                        # Validate artist names (1-5 words, starts with capital)
+                        if artist1 and 1 <= len(artist1.split()) <= 5 and artist1[0].isupper():
+                            artists_found.append(artist1)
+                        if artist2 and 1 <= len(artist2.split()) <= 5 and artist2[0].isupper():
+                            artists_found.append(artist2)
+                        if artists_found:
+                            break
+                
+                if artists_found:
+                    # Get songs by all found artists
+                    all_songs = []
+                    for artist in artists_found:
+                        # Get recommendations by this artist
+                        recommendations_response = self._recommend_songs_by_artist(artist, limit=5)
+                        # Get the stored recommendations
+                        song_keys = self._get_last_recommendations()
+                        if song_keys:
+                            all_songs.extend(song_keys)
+                    
+                    if all_songs:
+                        # Remove duplicates
+                        all_songs = list(dict.fromkeys(all_songs))
+                        # Add all recommended songs
+                        current_playlist = self._get_current_playlist()
+                        added = []
+                        for song_key in all_songs:
+                            if song_key not in current_playlist.songs:
+                                current_playlist.songs.append(song_key)
+                                added.append(song_key)
+                        
+                        if added:
+                            response = f"Added {len(added)} song(s) by {', '.join(artists_found)} to your playlist:\n"
+                            for i, song in enumerate(added[:5], 1):
+                                if ': ' in song:
+                                    _, title = song.split(': ', 1)
+                                    response += f"{i}. {title}\n"
+                                else:
+                                    response += f"{i}. {song}\n"
+                            if len(added) > 5:
+                                response += f"... and {len(added) - 5} more\n"
+                            response += "\n" + self._view_playlist()
+                            return response
+                        else:
+                            return f"All recommended songs by {', '.join(artists_found)} are already in your playlist."
+                    else:
+                        # If no songs found, try to get recommendations for first artist
+                        return self._recommend_songs_by_artist(artists_found[0], limit=5)
             
             # Pattern 2: "add some of their songs" - extract artists from context
             # Look for artist names mentioned earlier in the text (before "some of their")
@@ -4779,18 +4899,28 @@ Examples:
                 return f"There are only {len(last_recs)} recommendations available."
         
         elif 'first' in selection_lower:
-            # Extract number
-            match = re.search(r'first\s+(\w+|\d+)', selection_lower)
+            # Extract number - handle "the first two", "first two", "first 2", "first two songs", etc.
+            # Pattern: find "first" then look for a number word or digit after it (allowing for words in between)
+            match = re.search(r'first.*?(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)', selection_lower)
             if match:
-                num_word = match.group(1)
-                num_map = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5}
-                num = num_map.get(num_word, None)
-                if num is None:
-                    try:
-                        num = int(num_word)
-                    except:
-                        num = 1
-                songs_to_add = last_recs[:num]
+                # Extract the number word or digit from the match
+                num_match = re.search(r'(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)', match.group(0))
+                if num_match:
+                    num_word = num_match.group(0)
+                    num_map = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10}
+                    num = num_map.get(num_word, None)
+                    if num is None:
+                        try:
+                            num = int(num_word)
+                        except:
+                            num = 1
+                    songs_to_add = last_recs[:num] if num <= len(last_recs) else last_recs
+                else:
+                    # If no number found in match, default to first song
+                    songs_to_add = last_recs[:1]
+            else:
+                # If no match at all, default to first song
+                songs_to_add = last_recs[:1]
         
         elif 'last' in selection_lower and 'except' not in selection_lower:
             match = re.search(r'last\s+(\w+|\d+)', selection_lower)
